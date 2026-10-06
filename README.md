@@ -63,15 +63,14 @@
 
 | 插件 | 版本 | 上游最近更新 | 仓库 |
 |---|---|---|---|
-| kmod-tun | 随内核 6.6 | — | openwrt base |
-| EasyTier (luci-app-easytier) | 见 Release 说明 | — | https://github.com/EasyTier/luci-app-easytier |
-| ZeroTier | 见 Release 说明 | — | https://github.com/mwarning/zerotier-openwrt |
-| ddns-go | 见 Release 说明 | — | https://github.com/sirpdboy/luci-app-ddns-go |
-| iStore (luci-app-store) | 见 Release 说明 | — | https://github.com/linkease/istore |
-| wechatpush (luci-app-wechatpush) | 见 Release 说明 | — | https://github.com/tty228/luci-app-wechatpush |
-| Argon 主题（默认） | 随 immortalwrt/luci feed | — | https://github.com/jerrykuku/luci-theme-argon |
-
-> 上表来自最近一次编译的发布说明；完整版本号与上游更新日期见对应 Release。
+| kmod-tun | (见固件清单) | 随内核 6.6 | openwrt base |
+| EasyTier (luci-app-easytier) | 2.6.4 | 2026-09-25 | https://github.com/EasyTier/luci-app-easytier |
+| ZeroTier | 1.16.0 | 2025-09-12 | https://github.com/mwarning/zerotier-openwrt |
+| ddns-go | 6.12.5 | 2026-06-23 | https://github.com/sirpdboy/luci-app-ddns-go |
+| iStore (luci-app-store) | 0.2.1-r1 | 2026-09-25 | https://github.com/linkease/istore |
+| wechatpush (luci-app-wechatpush) | 3.6.12 | 2026-09-09 | https://github.com/tty228/luci-app-wechatpush |
+| Argon 主题（默认） | 2.4.3 | 2026-09-03 | https://github.com/jerrykuku/luci-theme-argon |
+| MTK 闭源无线（mt_wifi / luci-app-mtk） | 20230628-7a2544-TEST | (随本仓库) | MTK SDK（仓库内 package/mtk） |
 
 ### 7) 发布策略（全自动）
 每次编译后：
