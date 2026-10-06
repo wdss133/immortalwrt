@@ -1,25 +1,30 @@
-name: ImmortalWrt-IPQ807X-Daily
+name: ImmortalWrt-CR6608-Daily
 
 # ============================================================================
-#  每日北京时间 21:00（UTC 13:00）自动执行：
-#    1) 同步上游主线 Heleguo/immortalwrt@openwrt-24.10  -> 本仓库 openwrt-24.10
-#    2) 克隆本仓库源码树，按 custom/ 配置应用全部定制
-#    3) 编译 qualcommax/ipq807x（内核 6.6）
+#  小米 CR6608（MT7621 / ramips-mt7621）固件每日自动编译
+#
+#  每天北京时间 21:00（UTC 13:00）自动执行：
+#    1) 同步上游主线 Heleguo/immortalwrt@openwrt-24.10 -> 本仓库 openwrt-24.10
+#       （Heleguo fork = immortalwrt + MTK 闭源无线驱动 + MTK PPE 补丁，必须用它，
+#         换回 immortalwrt 官方源会丢掉 package/mtk 与 ramips 硬加速补丁）
+#    2) 克隆本仓库源码树，按 .config + custom/ 应用全部定制
+#    3) 编译 ramips/mt7621 的 xiaomi_mi-router-cr6608
 #    4) 发布：滚动 latest + 每次编译一个「时间戳 tag」的新 Release，并写入插件版本表
 #    5) 按真实配置重写 README 并回推
 #
 #  设计约束（为了「上游怎么变都能一直用」）：
-#    - 本文件、scripts/custom/*、custom/* 全部是**新增文件**，绝不修改上游既有文件；
+#    - 本仓库文件全部是**新增文件**，不改动上游既有文件；
 #      因此 git merge -X ours 同步上游时永远不会产生真冲突。
-#    - 第三方插件一律「探测分支 + 失败重试」后落位到 package/，不依赖 feeds 的分支名。
-#    - 唯一硬失败点：argon 主题缺失 / kmod-tun 缺失。其余缺失只告警，不打断流水线。
+#    - 第三方插件一律「探测分支 + 失败重试 + 架构兼容过滤」后落位到 package/。
+#    - MTK 闭源无线驱动按需自动补 Build/Prepare；若最终未进入配置则自动回退开源 mt76/wpad。
+#    - 硬失败点只有：argon 主题缺失 / kmod-tun 缺失 / 固件产物缺失。
 #
 #  ⚠️ 一次性前置设置（必须做，否则同步无法回推、Release 无法创建）：
 #     Settings -> Actions -> General -> Workflow permissions
-#       请选择 "Read and write permissions"，并勾选 "Allow GitHub Actions to create and approve pull requests"。
+#       选择 "Read and write permissions"，并勾选 "Allow GitHub Actions to create and approve pull requests"
 #
 #  ⚠️ GitHub 只会在**默认分支**上触发 schedule。本仓库默认分支为 openwrt-24.10，
-#     所以本文件必须存在于 openwrt-24.10；custom-ipq807x 为镜像分支（可手动 Run workflow）。
+#     所以本文件必须存在于 openwrt-24.10；custom-cr6608 为镜像分支（可手动 Run workflow）。
 # ============================================================================
 
 on:
@@ -33,19 +38,37 @@ on:
         required: false
         type: boolean
         default: true
+      upload_release:
+        description: '编译成功后发布 Release'
+        required: false
+        type: boolean
+        default: true
+      mtk_wifi:
+        description: 'MTK 闭源无线（on=用 MTK 驱动；off=用开源 mt76/wpad；auto=先试 MTK，失败自动回退）'
+        required: false
+        type: choice
+        options:
+          - auto
+          - 'on'
+          - 'off'
+        default: auto
       easytier_variant:
-        description: 'EasyTier 版本（noweb=预编译二进制，编译快；full=源码编译，很慢）'
+        description: 'EasyTier 版本（noweb=预编译二进制，快；full=源码编译，慢）'
         required: false
         type: choice
         options:
           - noweb
           - full
         default: noweb
-      keep_days:
-        description: '时间戳 Release 保留天数（超过则自动清理）'
-        required: false
-        type: string
-        default: '30'
+  push:
+    branches:
+      - openwrt-24.10
+    # 只有 CI 自己的文件变化才触发，README 自动提交不会引起循环
+    paths:
+      - '.config'
+      - 'custom/**'
+      - 'scripts/**'
+      - '.github/workflows/ImmortalWrt-CR6608-Daily.yml'
 
 permissions:
   contents: write
@@ -58,35 +81,32 @@ defaults:
 env:
   TZ: Asia/Shanghai
   OPENWRT_PATH: /mnt/openwrt
-  # 上游（被同步的对象）与本仓库源码
+  # 上游（被同步的对象）：Heleguo fork = immortalwrt + MTK 闭源无线 + MTK PPE 补丁
   UPSTREAM_REPO: https://github.com/Heleguo/immortalwrt.git
   UPSTREAM_BRANCH: openwrt-24.10
+  # 本仓库源码
   SOURCE_REPO: https://github.com/wdss133/immortalwrt.git
   SOURCE_BRANCH: openwrt-24.10
-  # 定制分支（镜像 / 覆盖源）
-  CUSTOM_BRANCH: custom-ipq807x
+  # 定制镜像 / 覆盖分支
+  CUSTOM_BRANCH: custom-cr6608
   CUSTOM_DIR: custom
-  # 编译目标
-  TARGET_BOARD: qualcommax
-  TARGET_SUBTARGET: ipq807x
-  TARGET_ID: qualcommax_ipq807x
-  KERNEL_FILE: kernel-6.6
-  # 自有文件位置
-  DEVICE_CONFIG: custom/IPQ807X.config
-  GENERAL_CONFIG: custom/General.config
-  CUSTOM_SCRIPT: scripts/custom/immortalwrt-customize.sh
+  # 目标：小米 CR6608（MT7621，ramips/mt7621）
+  TARGET_BOARD: ramips
+  TARGET_SUBTARGET: mt7621
+  TARGET_ID: ramips_mt7621
+  DEVICE: xiaomi_mi-router-cr6608
   # 产物 / 发布
-  ARTIFACT_PREFIX: IPQ807X-ImmortalWrt
-  RELEASE_PREFIX: IPQ807X-ImmortalWrt
-  KEEP_DAYS: "30"
+  ARTIFACT_PREFIX: CR6608
+  RELEASE_PREFIX: CR6608
+  KEEP_RECENT: "36"
 
 jobs:
 
   # -------------------------------------------------------------------------
-  # 1) 同步上游主线 -> 本仓库 openwrt-24.10（并尽力把结果同步到定制分支）
+  # 1) 同步上游主线 -> 本仓库默认分支（并尽力把结果快进到定制分支）
   # -------------------------------------------------------------------------
   Sync-Upstream:
-    if: ${{ github.event_name == 'schedule' || inputs.sync_upstream }}
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'push' || inputs.sync_upstream }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -103,7 +123,6 @@ jobs:
     - name: Sync Upstream(同步上游主线)
       id: sync
       env:
-        GH_TOKEN: ${{ github.token }}
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: |
         set -Eeuo pipefail
@@ -124,13 +143,11 @@ jobs:
             echo "synced=local" >> "$GITHUB_OUTPUT"
             echo "::warning::同步结果未能推送（GITHUB_TOKEN 可能只读），本次使用已合并的本地副本编译"
           fi
-          # 尽力把默认分支状态同步到定制分支；失败不影响编译
+          # 尽力把默认分支状态快进到定制分支；失败不影响编译
           if git ls-remote --exit-code --heads origin "$CUSTOM_BRANCH" >/dev/null 2>&1; then
-            if git push origin "HEAD:$CUSTOM_BRANCH"; then
-              echo "定制分支 $CUSTOM_BRANCH 已同步"
-            else
-              echo "::warning::定制分支 $CUSTOM_BRANCH 未能快进同步（可能已分叉），不影响编译"
-            fi
+            git push origin "HEAD:$CUSTOM_BRANCH" >/dev/null 2>&1 \
+              && echo "定制分支 $CUSTOM_BRANCH 已同步" \
+              || echo "::warning::定制分支 $CUSTOM_BRANCH 未能快进同步（可能已分叉），不影响编译"
           fi
         else
           git merge --abort || true
@@ -139,11 +156,11 @@ jobs:
         fi
 
   # -------------------------------------------------------------------------
-  # 2) 编译 IPQ807X
+  # 2) 编译 CR6608
   # -------------------------------------------------------------------------
   Build:
     needs: Sync-Upstream
-    # 显式 if：Sync-Upstream 被跳过时（sync_upstream=false）也要能编译
+    # 显式 if：Sync-Upstream 被跳过时也要能编译
     if: ${{ always() && needs.Sync-Upstream.result != 'failure' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 350
@@ -151,11 +168,12 @@ jobs:
       contents: read
       actions: read
     outputs:
-      version_kernel: ${{ steps.source.outputs.version_kernel }}
-      source_hash: ${{ steps.source.outputs.source_hash }}
+      kernel_version: ${{ steps.organize.outputs.kernel_version }}
+      source_commit: ${{ steps.source.outputs.source_commit }}
       artifact_name: ${{ steps.variables.outputs.artifact_name }}
+      mtk_state: ${{ steps.compile.outputs.mtk_state || steps.finalconfig.outputs.mtk_state }}
     concurrency:
-      group: immortalwrt-ipq807x-${{ github.ref }}
+      group: immortalwrt-cr6608-${{ github.ref }}
       cancel-in-progress: false
 
     steps:
@@ -177,32 +195,12 @@ jobs:
           rsync scons squashfs-tools subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
         sudo -E systemctl daemon-reload
         sudo timedatectl set-timezone "$TZ"
-
-    - name: Checkout(检出 CI 侧文件)
-      uses: actions/checkout@v4
-      with:
-        persist-credentials: false
-
-    - name: Fetch Custom Overlay(拉取定制分支配置)
-      run: |
-        set -Eeuo pipefail
-        if git ls-remote --exit-code --heads origin "$CUSTOM_BRANCH" >/dev/null 2>&1; then
-          git fetch --depth=1 --no-tags origin "$CUSTOM_BRANCH"
-          if git checkout FETCH_HEAD -- "$CUSTOM_DIR"; then
-            echo "已应用 $CUSTOM_BRANCH 分支的定制配置"
-            ls -l "$CUSTOM_DIR"
-          else
-            echo "::warning::$CUSTOM_BRANCH 分支没有 $CUSTOM_DIR 目录，使用当前分支默认配置"
-          fi
-        else
-          echo "::warning::未找到分支 $CUSTOM_BRANCH，使用当前分支默认配置"
-        fi
+        df -hT /mnt
 
     - name: Clone Source Code(克隆源码树)
       id: source
       run: |
         set -Eeuo pipefail
-        df -hT "$GITHUB_WORKSPACE"
         sudo mkdir -p "$OPENWRT_PATH"
         sudo chown -R "$(id -u):$(id -g)" "$OPENWRT_PATH"
         for attempt in 1 2 3; do
@@ -214,8 +212,7 @@ jobs:
             exit 1
           fi
           echo "::warning::源码克隆失败 (attempt $attempt/3)，重试中"
-          sudo rm -rf "$OPENWRT_PATH"
-          sudo mkdir -p "$OPENWRT_PATH"
+          sudo rm -rf "$OPENWRT_PATH"; mkdir -p "$OPENWRT_PATH"
           sudo chown -R "$(id -u):$(id -g)" "$OPENWRT_PATH"
           sleep $((attempt * 5))
         done
@@ -223,9 +220,9 @@ jobs:
         cd "$OPENWRT_PATH"
 
         # ---- 源码与上游一致性检查（best-effort）----
-        # Sync-Upstream 已把上游合并回推到本仓库；万一回推失败（GITHUB_TOKEN 只读等），
-        # 这里再自行对齐一次，确保「同步后编译」这条要求始终成立。
-        # 全部改动只针对源码树，定制文件来自 $GITHUB_WORKSPACE，因此对齐不会影响定制。
+        # Sync-Upstream 已把上游合并回推到本仓库；万一回推失败（token 只读等），
+        # 这里再自行对齐一次，保证「同步后编译」始终成立。定制文件都在本仓库内，
+        # 对齐不会丢失定制，只会把上游新提交拉进来。
         UP_SHA="$(git ls-remote "$UPSTREAM_REPO" "refs/heads/$UPSTREAM_BRANCH" 2>/dev/null | awk '{print $1}')"
         MY_SHA="$(git rev-parse HEAD)"
         if [ -z "$UP_SHA" ]; then
@@ -233,13 +230,13 @@ jobs:
         elif [ "$UP_SHA" = "$MY_SHA" ]; then
           echo "源码树已等于上游 HEAD（${MY_SHA:0:7}）"
         else
-          echo "源码树 HEAD=${MY_SHA:0:7}  上游 HEAD=${UP_SHA:0:7}  -> 尝试对齐到上游最新"
+          echo "源码树 HEAD=${MY_SHA:0:7}  上游 HEAD=${UP_SHA:0:7}  -> 尝试合并上游最新提交"
           git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || git remote set-url upstream "$UPSTREAM_REPO"
           if git fetch --no-tags --depth=100 upstream "$UPSTREAM_BRANCH" 2>/dev/null; then
             UP_REF="$(git rev-parse FETCH_HEAD)"
             git fetch --no-tags --depth=100 origin "$SOURCE_BRANCH" >/dev/null 2>&1 || true
             if git merge --no-edit -X ours "$UP_REF" >/dev/null 2>&1; then
-              echo "源码树已对齐到上游 ${UP_REF:0:7}"
+              echo "源码树已合并上游 ${UP_REF:0:7}"
             else
               git merge --abort >/dev/null 2>&1 || true
               git checkout -f HEAD >/dev/null 2>&1 || true
@@ -250,54 +247,21 @@ jobs:
           fi
         fi
 
-        VERSION_INFO="$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")"
-        {
-          echo "version_info<<EOF"
-          echo "$VERSION_INFO"
-          echo "EOF"
-        } >> "$GITHUB_OUTPUT"
-        # 动态解析内核版本，上游换内核（6.6 -> 6.12）也不会失效
-        VERSION_KERNEL=""
-        for kf in target/linux/*/"$KERNEL_FILE" target/linux/*/config-6.6 target/linux/*/config-6.12; do
-          [ -f "$kf" ] || continue
-          v="$(grep -oP 'LINUX_KERNEL_HASH-\K[0-9]+\.[0-9]+\.[0-9]+' "$kf" | head -n 1 || true)"
-          [ -n "$v" ] && { VERSION_KERNEL="$v"; break; }
-        done
-        echo "version_kernel=${VERSION_KERNEL:-unknown}" >> "$GITHUB_OUTPUT"
-        echo "source_hash=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-
-    - name: Disable Mainland Mirrors(屏蔽大陆下载源)
-      run: |
-        set -Eeuo pipefail
-        cd "$OPENWRT_PATH"
-        mirror_file="scripts/projectsmirrors.json"
-        if [ -f "$mirror_file" ]; then
-          jq '
-            with_entries(
-              .value |= map(select(
-                test("^https?://(mirrors\\.tencent\\.com|mirrors\\.aliyun\\.com|mirrors\\.tuna\\.tsinghua\\.edu\\.cn|mirrors\\.ustc\\.edu\\.cn|mirror\\.iscas\\.ac\\.cn|mirror\\.nju\\.edu\\.cn)(/|$)")
-                | not
-              ))
-            )
-          ' "$mirror_file" > "$mirror_file.tmp"
-          mv "$mirror_file.tmp" "$mirror_file"
-        else
-          echo "::warning::未找到 $mirror_file，跳过镜像处理"
-        fi
-        [ -f scripts/download.pl ] && sed -i '/raw\.gitmirror\.com/d' scripts/download.pl || true
+        echo "source_commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        echo "源码提交：$(git rev-parse --short HEAD)"
 
     - name: Generate Variables(生成缓存与产物变量)
       id: variables
       env:
-        SOURCE_HASH: ${{ steps.source.outputs.source_hash }}
+        SOURCE_COMMIT: ${{ steps.source.outputs.source_commit }}
       run: |
         set -Eeuo pipefail
-        CUSTOMIZATION_HASH="${{ hashFiles('scripts/custom/immortalwrt-customize.sh', 'custom/General.config', 'custom/IPQ807X.config', 'custom/packages.seed', 'custom/devices.include', 'custom/devices.exclude') }}"
+        CUSTOMIZATION_HASH="${{ hashFiles('.config', 'custom/packages.seed', 'custom/devices.include', 'custom/devices.exclude', 'scripts/custom/customize.sh') }}"
         CUSTOMIZATION_HASH="${CUSTOMIZATION_HASH:0:7}"
-        CACHE_PREFIX="immortalwrt-${TARGET_ID}-24.10"
+        CACHE_PREFIX="immortalwrt-cr6608-24.10"
         {
-          echo "CCACHE_KEY=${CACHE_PREFIX}-ccache-${CUSTOMIZATION_HASH}-${SOURCE_HASH}"
-          echo "STAGING_KEY=${CACHE_PREFIX}-staging-${CUSTOMIZATION_HASH}-${SOURCE_HASH}"
+          echo "CCACHE_KEY=${CACHE_PREFIX}-ccache-${CUSTOMIZATION_HASH}-${SOURCE_COMMIT:0:7}"
+          echo "STAGING_KEY=${CACHE_PREFIX}-staging-${CUSTOMIZATION_HASH}-${SOURCE_COMMIT:0:7}"
           echo "CCACHE_RESTORE_PREFIX=${CACHE_PREFIX}-ccache-"
           echo "STAGING_RESTORE_PREFIX=${CACHE_PREFIX}-staging-"
         } >> "$GITHUB_ENV"
@@ -327,56 +291,63 @@ jobs:
     - name: Apply Customization(应用全部定制)
       env:
         EASYTIER_VARIANT: ${{ inputs.easytier_variant || 'noweb' }}
-        CUSTOM_WORKSPACE: ${{ github.workspace }}
+        MTK_WIFI: ${{ inputs.mtk_wifi || 'auto' }}
       run: |
         set -Eeuo pipefail
         cd "$OPENWRT_PATH"
-        chmod +x "$GITHUB_WORKSPACE/$CUSTOM_SCRIPT"
-        CUSTOM_DIR="$GITHUB_WORKSPACE/$CUSTOM_DIR" \
-        GENERAL_CONFIG="$GITHUB_WORKSPACE/$GENERAL_CONFIG" \
-        DEVICE_CONFIG="$GITHUB_WORKSPACE/$DEVICE_CONFIG" \
-        EASYTIER_VARIANT="$EASYTIER_VARIANT" \
-        TARGET_ID="$TARGET_ID" \
-        ARTIFACT_PREFIX="$ARTIFACT_PREFIX" \
-          "$GITHUB_WORKSPACE/$CUSTOM_SCRIPT" "$GITHUB_WORKSPACE/$CUSTOM_DIR"
+        chmod +x scripts/custom/*.sh
+        ./scripts/custom/customize.sh "$OPENWRT_PATH/$CUSTOM_DIR"
 
-    - name: Generate Final Config(生成最终配置)
+    - name: Generate Final Config(生成最终配置并自检)
+      id: finalconfig
       run: |
         set -Eeuo pipefail
         cd "$OPENWRT_PATH"
-        cat "$GITHUB_WORKSPACE/$DEVICE_CONFIG" "$GITHUB_WORKSPACE/$GENERAL_CONFIG" > .config
-        echo "---- iStore 落位自检 ----"
-        for p in luci-app-store luci-lib-taskd luci-lib-xterm taskd; do
-          if [ -f "package/$p/Makefile" ]; then
-            echo "  package/$p/Makefile: EXISTS"
-          else
-            echo "  package/$p/Makefile: MISSING"
-          fi
-        done
-        echo "---- aurora 残留检查 ----"
-        find package feeds -maxdepth 4 -type d -iname '*aurora*' 2>/dev/null | sed 's/^/  LEFT: /' || true
+        # 源码树就是本仓库，仓库根的 .config 直接作为构建种子（customize.sh 已在原地改过它）
+        [ -s .config ] || { echo "::error::未找到 .config 种子文件"; exit 1; }
         make defconfig
+
+        # ---- MTK 闭源无线落位校验；未进入配置则自动回退开源 mt76/wpad ----
+        MTK_STATE="off"
+        if grep -q '^CONFIG_PACKAGE_kmod-mt7915=y' .config; then
+          MTK_STATE="on"
+          echo "OK   MTK 闭源无线已进入最终配置"
+        elif [ "${MTK_WIFI:-auto}" != "off" ]; then
+          echo "::warning::MTK 闭源无线未进入最终配置（依赖不满足/上游结构变化），自动回退开源 mt76/wpad"
+          ./scripts/custom/fallback-openwrt-wifi.sh
+          MTK_STATE="fallback"
+        fi
+        echo "mtk_state=$MTK_STATE" >> "$GITHUB_OUTPUT"
+
+        echo "---- libustream-ssl 变体数量（必须为 1）----"
+        cnt="$(grep -cE '^CONFIG_PACKAGE_libustream-(openssl|mbedtls|wolfssl)=y' .config || true)"
+        echo "  libustream 变体数: $cnt"
+        [ "$cnt" -eq 1 ] || { echo "::error::libustream-ssl 变体数量必须为 1（当前 $cnt）"; exit 1; }
+
         echo "---- 关键项自检 ----"
-        for sym in CONFIG_PACKAGE_kmod-tun CONFIG_PACKAGE_luci-theme-argon \
-                   CONFIG_PACKAGE_luci-app-argon-config \
-                   CONFIG_PACKAGE_zerotier CONFIG_PACKAGE_luci-app-zerotier \
-                   CONFIG_PACKAGE_easytier-noweb CONFIG_PACKAGE_luci-app-easytier \
-                   CONFIG_PACKAGE_ddns-go CONFIG_PACKAGE_luci-app-ddns-go \
-                   CONFIG_PACKAGE_luci-app-store CONFIG_PACKAGE_luci-lib-taskd \
-                   CONFIG_PACKAGE_luci-app-wechatpush; do
-          if grep -q "^${sym}=[ym]" .config; then
+        fail=0
+        for sym in CONFIG_PACKAGE_kmod-tun CONFIG_PACKAGE_luci-theme-argon CONFIG_TARGET_ramips_mt7621 \
+                   CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_${DEVICE}; do
+          if grep -q "^${sym}=y" .config; then
             echo "OK   ${sym}"
           else
-            echo "::warning::最终配置中缺少 ${sym}（依赖不满足或上游改名，不影响编译继续）"
+            echo "::error::关键项未选中: ${sym}"; fail=1
           fi
         done
-        if grep -qE "^CONFIG_PACKAGE_.*aurora.*=[ym]" .config; then
+        for sym in CONFIG_PACKAGE_zerotier CONFIG_PACKAGE_luci-app-zerotier \
+                   CONFIG_PACKAGE_easytier-noweb CONFIG_PACKAGE_luci-app-easytier \
+                   CONFIG_PACKAGE_ddns-go CONFIG_PACKAGE_luci-app-ddns-go \
+                   CONFIG_PACKAGE_luci-app-store CONFIG_PACKAGE_luci-app-wechatpush \
+                   CONFIG_PACKAGE_luci-app-wol CONFIG_PACKAGE_luci-app-upnp; do
+          grep -q "^${sym}=y" .config && echo "OK   ${sym}" \
+            || echo "::warning::缺少 ${sym}（依赖不满足或上游改名，不影响编译继续）"
+        done
+        if grep -qE '^CONFIG_PACKAGE_.*aurora.*=[ym]' .config; then
           echo "::warning::Aurora 主题仍被选中，请检查定制脚本"
         else
           echo "OK   Aurora 已移除"
         fi
-        echo "---- 机型数量 ----"
-        echo "  $(grep -c '^CONFIG_TARGET_DEVICE_.*=y' .config) 个机型"
+        [ "$fail" -eq 0 ] || exit 1
 
     - name: Download DL Package(下载DL软件包)
       run: |
@@ -390,21 +361,16 @@ jobs:
           fi
           for toolchain_dir in staging_dir/toolchain-*; do
             [ -d "$toolchain_dir" ] || continue
-            toolchain_stamp="$(find "$toolchain_dir" -maxdepth 2 -type f -name '.toolchain_compile*' -print -quit)"
-            [ -n "$toolchain_stamp" ] || continue
-            if [ -d "$toolchain_dir/stamp" ]; then
-              find "$toolchain_dir/stamp" -maxdepth 1 -type f ! -name '.toolchain_compile*' -exec touch {} +
-            fi
+            ts="$(find "$toolchain_dir" -maxdepth 2 -type f -name '.toolchain_compile*' -print -quit)"
+            [ -n "$ts" ] || continue
+            [ -d "$toolchain_dir/stamp" ] && find "$toolchain_dir/stamp" -maxdepth 1 -type f ! -name '.toolchain_compile*' -exec touch {} +
             find "$toolchain_dir" -maxdepth 2 -type f -name '.toolchain_compile*' -exec touch {} +
           done
         fi
         for attempt in 1 2 3; do
-          if make download -j"$(nproc)"; then
-            break
-          fi
+          if make download -j"$(nproc)"; then break; fi
           if [ "$attempt" -eq 3 ]; then
-            echo "Error: make download failed after $attempt attempts" >&2
-            exit 1
+            echo "Error: make download failed after $attempt attempts" >&2; exit 1
           fi
           echo "::warning::make download 失败 (attempt $attempt/3)，清理不完整文件后重试"
           find dl -type f -size -1024c -print -delete
@@ -412,10 +378,30 @@ jobs:
         done
 
     - name: Compile Firmware(开始编译固件)
+      id: compile
+      env:
+        MTK_STATE: ${{ steps.finalconfig.outputs.mtk_state }}
       run: |
+        set -Eeuo pipefail
         cd "$OPENWRT_PATH"
         echo -e "$(nproc) thread compile"
-        make -j"$(nproc)" || make -j1 V=s
+        final_state="$MTK_STATE"
+        if make -j"$(nproc)" || make -j1 V=s; then
+          echo "编译成功（无线方案状态: $final_state）"
+        else
+          if [ "$MTK_STATE" = "on" ]; then
+            # MTK 闭源驱动首次在 CI 里编译，失败概率不低。为了不让整轮空手而归，
+            # 自动回退到开源 mt76/wpad 再编一次（工具链/ccache 已在，重编多为增量）。
+            echo "::warning::启用 MTK 闭源无线时编译失败，自动回退开源 mt76/wpad 后重编"
+            ./scripts/custom/fallback-openwrt-wifi.sh
+            make -j"$(nproc)" || make -j1 V=s
+            final_state="fallback"
+            echo "回退后编译成功（无线方案状态: $final_state）"
+          else
+            echo "::error::编译失败"; exit 1
+          fi
+        fi
+        echo "mtk_state=$final_state" >> "$GITHUB_OUTPUT"
 
     - name: Check Space Usage(检查空间使用情况)
       if: ${{ !cancelled() }}
@@ -425,33 +411,37 @@ jobs:
       id: organize
       run: |
         set -Eeuo pipefail
-        cd "$OPENWRT_PATH"/bin/targets/*/*
-        cp "$OPENWRT_PATH/.config" "$ARTIFACT_PREFIX.config"
-        [ -f config.buildinfo ] && mv config.buildinfo "$ARTIFACT_PREFIX.config.buildinfo" || true
-        manifest_file="$(ls ./*.manifest 2>/dev/null | head -n 1 || true)"
-        [ -n "$manifest_file" ] && mv "$manifest_file" "$ARTIFACT_PREFIX.manifest" || echo "::warning::未找到 manifest 文件"
-        mkdir -p packages
-        package_count=0
-        while IFS= read -r -d '' package_file; do
-          mv -f "$package_file" packages/
-          package_count=$((package_count + 1))
-        done < <(find "$OPENWRT_PATH/bin/packages" -type f \( -name '*.apk' -o -name '*.ipk' \) -print0 2>/dev/null || true)
-        if [ "$package_count" -gt 0 ]; then
-          tar -zcf "$ARTIFACT_PREFIX.Packages.tar.gz" packages
-        else
-          echo "::warning::未在 bin/packages 下找到软件包，跳过打包"
-          rm -rf packages
+        cd "$OPENWRT_PATH"
+        F="$OPENWRT_PATH/ci-out"
+        rm -rf "$F"; mkdir -p "$F"
+        OUT="bin/targets/${TARGET_BOARD}/${TARGET_SUBTARGET}"
+
+        cp -f "$OUT"/*squashfs-sysupgrade.bin "$F/${ARTIFACT_PREFIX}-${DEVICE}-squashfs-sysupgrade.bin" 2>/dev/null || true
+        cp -f "$OUT"/*initramfs-kernel.bin    "$F/${ARTIFACT_PREFIX}-${DEVICE}-initramfs-kernel.bin" 2>/dev/null || true
+        cp -f "$OUT"/*.manifest               "$F/" 2>/dev/null || true
+        cp -f "$OUT"/*.itb                    "$F/" 2>/dev/null || true
+        cp -f .config                         "$F/${ARTIFACT_PREFIX}.config" 2>/dev/null || true
+        cp -f config.buildinfo                "$F/" 2>/dev/null || true
+        cp -f "$OPENWRT_PATH"/${ARTIFACT_PREFIX}.plugins.md "$F/" 2>/dev/null || true
+        cp -f "$OPENWRT_PATH"/third-party-sources.txt "$F/" 2>/dev/null || true
+        printf '%s\n' "$(git rev-parse HEAD)" > "$F/source-commit.txt"
+
+        if [ ! -s "$F/${ARTIFACT_PREFIX}-${DEVICE}-squashfs-sysupgrade.bin" ]; then
+          echo "Error: 未找到 sysupgrade 固件，bin/targets 内容如下：" >&2
+          ls -lh "$OUT" || true
+          exit 1
         fi
-        [ -s "$OPENWRT_PATH/third-party-sources.txt" ] \
-          && cp "$OPENWRT_PATH/third-party-sources.txt" "$ARTIFACT_PREFIX.third-party-sources.txt" \
-          || echo "::warning::未生成 third-party-sources.txt"
-        if [ -f "$OPENWRT_PATH/$ARTIFACT_PREFIX.plugins.md" ]; then
-          cp "$OPENWRT_PATH/$ARTIFACT_PREFIX.plugins.md" "$ARTIFACT_PREFIX.plugins.md"
-        else
-          echo "::warning::未生成插件信息文件 $ARTIFACT_PREFIX.plugins.md"
-        fi
-        rm -rf feeds.buildinfo version.buildinfo sha256sums profiles.json
-        echo "firmware_path=$PWD" >> "$GITHUB_OUTPUT"
+
+        # 内核版本：从 manifest 里 kmod 的 ABI 版本号取（形如 6.6.157-r1）
+        KVER="$(grep -m1 -oE '^kmod-nf-conntrack - [0-9][^ ]*' "$OUT"/*.manifest 2>/dev/null | head -n1 | awk '{print $3}' | cut -d- -f1 || true)"
+        [ -n "$KVER" ] || KVER=unknown
+        printf '%s\n' "$KVER" > "$F/kernel-version.txt"
+        echo "kernel_version=$KVER" >> "$GITHUB_OUTPUT"
+
+        ( cd "$F" && sha256sum * > sha256sums.txt )
+        rm -rf "$F"/config.buildinfo
+        ls -lh "$F"
+        echo "firmware_path=$F" >> "$GITHUB_OUTPUT"
 
     - name: Upload Firmware Artifact(上传固件产物)
       uses: actions/upload-artifact@v4
@@ -461,14 +451,14 @@ jobs:
         if-no-files-found: error
         compression-level: 0
         overwrite: true
-        retention-days: 3
+        retention-days: 7
 
   # -------------------------------------------------------------------------
   # 3) 发布：滚动 latest + 每次编译一个时间戳 tag 的新 Release
   # -------------------------------------------------------------------------
   Release:
     needs: Build
-    if: ${{ always() && needs.Build.result == 'success' }}
+    if: ${{ always() && needs.Build.result == 'success' && (github.event_name == 'schedule' || github.event_name == 'push' || inputs.upload_release) }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -488,17 +478,17 @@ jobs:
     - name: Release & Prune(发布固件并清理旧版本)
       env:
         GH_TOKEN: ${{ github.token }}
-        VERSION_KERNEL: ${{ needs.Build.outputs.version_kernel }}
-        SOURCE_HASH: ${{ needs.Build.outputs.source_hash }}
-        KEEP_DAYS: ${{ inputs.keep_days || '30' }}
+        VERSION_KERNEL: ${{ needs.Build.outputs.kernel_version }}
+        SOURCE_COMMIT: ${{ needs.Build.outputs.source_commit }}
+        DEVICE_NAME: ${{ env.DEVICE }}
+        MTK_WIFI: ${{ needs.Build.outputs.mtk_state }}
       run: |
         set -Eeuo pipefail
-        chmod +x "$GITHUB_WORKSPACE/scripts/custom/release.sh"
-        "$GITHUB_WORKSPACE/scripts/custom/release.sh" \
-          "$GITHUB_WORKSPACE/artifacts/firmware" "$RELEASE_PREFIX" "${KEEP_DAYS:-30}"
+        chmod +x scripts/custom/release.sh
+        scripts/custom/release.sh artifacts/firmware "$RELEASE_PREFIX" "$KEEP_RECENT"
 
   # -------------------------------------------------------------------------
-  # 4) 按真实配置重写 README（含各插件最新版本号与上游更新日期）
+  # 4) 按真实配置重写 README（含各插件版本号与上游更新日期）
   # -------------------------------------------------------------------------
   Docs:
     needs: [Sync-Upstream, Release]
@@ -549,13 +539,12 @@ jobs:
           fi
         fi
         echo "plugin_table=$out" >> "$GITHUB_OUTPUT"
-        echo "---- 采集结果预览 ----"
-        head -n 20 "$out" || true
+        head -n 15 "$out" || true
 
     - name: Regenerate README(按实际配置重写 README)
       env:
-        KEEP_DAYS: ${{ env.KEEP_DAYS }}
         PLUGIN_TABLE: ${{ steps.plugins.outputs.plugin_table }}
+        MTK_STATE: ${{ needs.Build.outputs.mtk_state }}
       run: |
         set -Eeuo pipefail
         chmod +x scripts/custom/gen-readme.sh
@@ -564,7 +553,7 @@ jobs:
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         if [ -n "$(git status --porcelain README.md)" ]; then
           git add README.md
-          git commit -m "docs: regenerate README from current configuration"
+          git commit -m "docs: 自动更新 README [skip ci]"
           git pull --rebase --autostash origin "${GITHUB_REF_NAME:-$SOURCE_BRANCH}" || true
           git push origin "HEAD:${GITHUB_REF_NAME:-$SOURCE_BRANCH}" \
             || echo "::warning::README 推送失败（可能权限/冲突），不影响编译"

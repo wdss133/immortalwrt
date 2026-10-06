@@ -1,34 +1,39 @@
 #!/usr/bin/env bash
 #
-# release.sh —— ImmortalWrt IPQ807X 定制固件「发布」脚本
+# release.sh —— 小米 CR6608 固件「发布」脚本（与 workflow 解耦，便于 fork / 换分支复用）
 #
 # 职责：
-#   1) 依据固件清单与构建阶段产物生成发布说明（含各插件版本号与上游更新日期）。
-#   2) 发布 / 更新：
-#        - <PREFIX>-latest                       滚动最新（下载链接固定）
-#        - <PREFIX>-YYYYMMDD-HHMM                本次编译的「时间戳 tag」新 Release
-#   3) 清理旧 Release：只保留 latest + 最近 KEEP_DAYS 天内的时间戳 Release。
+#   1) 依据固件清单与构建阶段产物生成发布说明（含插件版本号与上游更新日期）；
+#   2) 每次编译创建一个「时间戳 tag」Release：<PREFIX>-YYYYMMDD-HHMM（北京时间）；
+#   3) 同时维护滚动 Release <PREFIX>-latest，下载链接固定，永远指向最新固件；
+#   4) 清理旧 Release，保留规则（取并集，全部保住）：
+#        - 滚动 <PREFIX>-latest
+#        - 最近 KEEP_RECENT 个时间戳 Release（默认 36）
+#        - 每个月的最后一次编译（月度归档）
+#        - 当天的全部编译
+#      只删除时间戳格式的本前缀 Release，绝不动其它 tag。
 #
 # 用法：
-#   release.sh <artifact_dir> [tag_prefix] [keep_days]
+#   release.sh <artifact_dir> [tag_prefix] [keep_recent]
 # 环境变量：
 #   GH_TOKEN            必填（contents:write），gh CLI 使用
 #   GITHUB_REPOSITORY   必填（owner/repo）；本地调试可用 REPO 覆盖
+#   TAG_TZ              可选，tag 使用哪个时区的时间戳，默认 Asia/Shanghai
 #   VERSION_KERNEL      可选，写入发布说明
-#   SOURCE_HASH         可选，源码树 commit，写入发布说明
-#   SOURCE_BRANCH       可选，默认 openwrt-24.10
-#   TARGET_ID           可选，默认 qualcommax_ipq807x
+#   SOURCE_REPO/SOURCE_BRANCH/SOURCE_COMMIT 可选，写入发布说明
 #
 set -Eeuo pipefail
 
-ART_DIR="${1:?用法: release.sh <artifact_dir> [tag_prefix] [keep_days]}"
-PREFIX="${2:-IPQ807X-ImmortalWrt}"
-KEEP_DAYS="${3:-30}"
+ART_DIR="${1:?用法: release.sh <artifact_dir> [tag_prefix] [keep_recent]}"
+PREFIX="${2:-CR6608}"
+KEEP_RECENT="${3:-${KEEP_RECENT:-36}}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
-SOURCE_BRANCH="${SOURCE_BRANCH:-openwrt-24.10}"
+TAG_TZ="${TAG_TZ:-Asia/Shanghai}"
 VERSION_KERNEL="${VERSION_KERNEL:-unknown}"
-SOURCE_HASH="${SOURCE_HASH:-unknown}"
-TARGET_ID="${TARGET_ID:-qualcommax_ipq807x}"
+SOURCE_REPO="${SOURCE_REPO:-https://github.com/wdss133/immortalwrt.git}"
+SOURCE_BRANCH="${SOURCE_BRANCH:-openwrt-24.10}"
+DEVICE_NAME="${DEVICE_NAME:-${DEVICE:-xiaomi_mi-router-cr6608}}"
+MTK_WIFI="${MTK_WIFI:-on}"
 
 log() { printf '[release] %s\n' "$*"; }
 die() { printf '[release][error] %s\n' "$*" >&2; exit 1; }
@@ -37,126 +42,149 @@ die() { printf '[release][error] %s\n' "$*" >&2; exit 1; }
 [ -n "$REPO" ] || die "需要 GITHUB_REPOSITORY（或 REPO）"
 command -v gh >/dev/null 2>&1 || die "未找到 gh CLI"
 
-# 时间戳 tag：YYYYMMDD-HHMM（TZ 由 workflow 设为 Asia/Shanghai）
-STAMP="$(date '+%Y%m%d-%H%M')"
+STAMP="$(TZ="$TAG_TZ" date '+%Y%m%d-%H%M')"
+TODAY="$(TZ="$TAG_TZ" date '+%Y%m%d')"
+NOW="$(TZ="$TAG_TZ" date '+%Y-%m-%d %H:%M')"
+TS_TAG="${PREFIX}-${STAMP}"
 LATEST_TAG="${PREFIX}-latest"
-STAMP_TAG="${PREFIX}-${STAMP}"
-
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 ############################ 1) 组装发布说明 ############################
 
-ADDED_TABLE="$(cat "$ART_DIR"/*.plugins.md 2>/dev/null || echo '（未采集到插件信息）')"
-MAN="$(ls "$ART_DIR"/*.manifest 2>/dev/null | head -n1 || true)"
-NOW="$(date '+%Y-%m-%d %H:%M %Z')"
+PLUGINS_MD="$(ls "$ART_DIR"/*.plugins.md 2>/dev/null | head -n1 || true)"
+SRC_TXT="$(ls "$ART_DIR"/third-party-sources.txt 2>/dev/null | head -n1 || true)"
+COMMIT_TXT="$(ls "$ART_DIR"/source-commit.txt 2>/dev/null | head -n1 || true)"
 
-def_list=""; def_table=""
-if [ -n "$MAN" ]; then
-  while read -r name ver; do
-    [ -n "$name" ] || continue
-    case "$name" in
-      luci-app-*|luci-theme-*) ;;
-      *) continue ;;
-    esac
-    def_list="${def_list:+${def_list}、}${name}"
-    def_table="${def_table}| ${name} | ${ver} | （随上游 feeds） | openwrt feeds |\n"
-  done < <(awk 'NF>=3{print $1, $3}' "$MAN" 2>/dev/null || true)
-else
-  log "警告：未找到 *.manifest，默认内置清单将为空"
-fi
+SOURCE_COMMIT="（未知）"
+[ -n "${SOURCE_COMMIT:-}" ] && SOURCE_COMMIT="$SOURCE_COMMIT"
+[ -n "$COMMIT_TXT" ] && SOURCE_COMMIT="$(head -n1 "$COMMIT_TXT" | tr -d '\r')"
 
-FIRMWARE_LIST="$(cd "$ART_DIR" && ls -1 2>/dev/null | grep -vE '\.(plugins\.md|third-party-sources\.txt)$' | head -n 40 || true)"
+case "$MTK_WIFI" in
+  on)       WIFI_DESC="MTK 闭源 mt_wifi 驱动 + luci-app-mtk（MT7621 原厂方案）" ;;
+  fallback) WIFI_DESC="开源 mt76/wpad（MTK 闭源驱动未进入最终配置，已自动回退）" ;;
+  off)      WIFI_DESC="开源 mt76/wpad（按配置选择）" ;;
+  *)        WIFI_DESC="${MTK_WIFI}" ;;
+esac
 
 BODY="$WORK/body.md"
 {
-  echo "> 🔗 **滚动 latest**：\`${LATEST_TAG}\` 下载链接固定，固件随每次编译更新为最新。"
-  echo "> 本 Release 为 **时间戳快照**：\`${STAMP_TAG}\`。"
+  echo "## 小米 CR6608 固件（自动编译）"
   echo ""
-  echo "**ImmortalWrt IPQ807X 定制固件（自动编译发布）**"
+  echo "> 🔗 **滚动 latest**：[\`${LATEST_TAG}\`](https://github.com/${REPO}/releases/tag/${LATEST_TAG}) 下载链接固定，永远指向最新固件。"
+  echo "> 本页为时间戳版本 **\`${TS_TAG}\`**（北京时间 ${NOW}）。"
   echo ""
   echo "### 📒 固件信息"
-  echo "- 基于 [Heleguo/immortalwrt](https://github.com/Heleguo/immortalwrt) \`${SOURCE_BRANCH}\` 自动同步编译"
-  echo "- 目标平台：**${TARGET_ID}**（内核 6.6，Qualcomm ath11k 无线）"
-  echo "- 默认主题：**argon**（已移除 Aurora 主题及其配置插件）"
-  echo "- 内核特性：已启用 **kmod-tun**（ZeroTier / EasyTier 依赖）"
-  echo "- **默认内置**：${def_list:-（无）}"
-  echo "- **本仓库新增内置**：kmod-tun、argon 主题、EasyTier、ZeroTier、ddns-go、iStore、wechatpush"
-  echo "### 🧊 版本信息"
-  echo "- 内核版本：**${VERSION_KERNEL}**"
-  echo "- 源码 commit：\`${SOURCE_HASH}\`"
+  echo "- 源码：\`${SOURCE_REPO}\`（分支 \`${SOURCE_BRANCH}\`）"
+  echo "- 源码提交：\`${SOURCE_COMMIT}\`"
+  echo "- 目标机型：\`${DEVICE_NAME}\`（MT7621 · ramips/mt7621 · 内核 **${VERSION_KERNEL}**）"
+  echo "- 无线方案：**${WIFI_DESC}**"
+  echo "- 硬件加速：内核自带 MTK PPE（\`CONFIG_NET_MEDIATEK_SOC\`）+ nft 流卸载"
+  echo "- 默认主题：**argon**（已确保无 Aurora 主题）"
+  echo "- 默认地址：**192.168.1.1**"
   echo "- 编译时间：${NOW}"
   echo ""
-  echo "### 🧩 内置插件（编译时拉取的上游最新版本）"
+  echo "### 🧩 内置插件（编译时从上游拉取的版本）"
   echo ""
   echo "<!--PLUGINS:BEGIN-->"
-  printf '%s\n' "$ADDED_TABLE"
+  if [ -n "$PLUGINS_MD" ]; then
+    cat "$PLUGINS_MD"
+  else
+    echo "（未采集到插件信息）"
+  fi
   echo "<!--PLUGINS:END-->"
   echo ""
-  echo "**📦 默认内置（随镜像自带）**"
+  echo "### 📌 第三方源快照"
   echo ""
-  echo "| 插件 | 版本 | 上游最近更新 | 仓库 |"
-  echo "|---|---|---|---|"
-  printf '%b' "$def_table"
+  if [ -n "$SRC_TXT" ]; then
+    echo '| 仓库 | 分支 | 提交 | 上游最后提交日期 |'
+    echo '|---|---|---|---|'
+    tail -n +2 "$SRC_TXT" | awk -F'\t' 'NF>=3{printf "| %s | %s | `%s` | %s |\n", $1, $2, substr($3,1,10), ($4==""?"-":$4)}'
+  else
+    echo "（无第三方源记录）"
+  fi
   echo ""
-  echo "### 📁 产物文件"
-  echo '```'
-  printf '%s\n' "$FIRMWARE_LIST"
-  echo '```'
+  echo "### 🗂 Release 保留策略"
+  echo "- 每次编译生成一个时间戳 tag：\`${PREFIX}-YYYYMMDD-HHMM\`（北京时间）"
+  echo "- 同时更新滚动 \`${LATEST_TAG}\`"
+  echo "- 自动清理：保留 \`latest\` + 最近 **${KEEP_RECENT}** 个时间戳版本 + 每月最后一次编译 + 当天全部"
+  echo ""
+  echo "### 🚀 刷机"
+  echo "- 已刷过 OpenWrt / ImmortalWrt：\`sysupgrade -n <...squashfs-sysupgrade.bin>\`，或 LuCI「系统 → 备份/刷写固件」，首刷建议不保留配置"
+  echo "- 原厂固件：先用 \`...initramfs-kernel.bin\` 经 Breed / U-Boot 中转，再 \`sysupgrade\` 到 squashfs 版本"
 } > "$BODY"
 log "发布说明已生成: $BODY"
 
 ############################ 2) 发布 / 更新 Release ############################
 
 publish() {
-  local tag="$1" title="$2" is_latest="$3" extra_flag=""
-  [ "$is_latest" = "1" ] || extra_flag="--latest=false"
+  local tag="$1" title="$2"
   if gh release view "$tag" --repo "$REPO" >/dev/null 2>&1; then
     gh release edit "$tag" --repo "$REPO" --title "$title" --notes-file "$BODY"
     gh release upload "$tag" "$ART_DIR"/* --repo "$REPO" --clobber
     log "已更新 Release: $tag"
   else
-    # shellcheck disable=SC2086
-    gh release create "$tag" "$ART_DIR"/* --repo "$REPO" --title "$title" --notes-file "$BODY" $extra_flag
+    gh release create "$tag" "$ART_DIR"/* --repo "$REPO" --title "$title" --notes-file "$BODY"
     log "已创建 Release: $tag"
-  fi
-  if [ "$is_latest" = "1" ]; then
-    gh release edit "$tag" --repo "$REPO" --latest >/dev/null 2>&1 || true
   fi
 }
 
-# 若同一分钟重复触发（手动重跑），追加秒数避免 tag 冲突
-if gh release view "$STAMP_TAG" --repo "$REPO" >/dev/null 2>&1; then
-  STAMP_TAG="${PREFIX}-$(date '+%Y%m%d-%H%M%S')"
-  log "时间戳 tag 已存在，改用 $STAMP_TAG"
+# 同一分钟重复触发（手动重跑）时追加秒数，避免 tag 冲突
+if gh release view "$TS_TAG" --repo "$REPO" >/dev/null 2>&1; then
+  TS_TAG="${PREFIX}-$(TZ="$TAG_TZ" date '+%Y%m%d-%H%M%S')"
+  log "时间戳 tag 已存在，改用 $TS_TAG"
 fi
 
-publish "$STAMP_TAG" "${PREFIX} ${STAMP}（时间戳快照）" 0
-publish "$LATEST_TAG" "${PREFIX} latest（滚动最新）" 1
+publish "$TS_TAG" "${PREFIX} ${STAMP}"
+publish "$LATEST_TAG" "${PREFIX} latest（最新固件）"
 
 ############################ 3) 清理旧 Release ############################
 
-[ "$KEEP_DAYS" -ge 1 ] 2>/dev/null || KEEP_DAYS=30
-cutoff_epoch="$(( $(date +%s) - KEEP_DAYS * 86400 ))"
-log "保留策略：latest + 最近 ${KEEP_DAYS} 天的时间戳 Release（截止 $(date -d "@${cutoff_epoch}" '+%Y-%m-%d')）"
+mapfile -t TS_TAGS < <(
+  gh release list --repo "$REPO" --limit 500 --json tagName --jq '.[].tagName' \
+  | grep -E "^${PREFIX}-[0-9]{8}-[0-9]{4}$" | sort -r || true
+)
 
-tags="$(gh release list --repo "$REPO" --limit 300 --json tagName --jq '.[].tagName' 2>/dev/null || true)"
-printf '%s\n' "$tags" | while read -r t; do
+declare -A KEEP=()
+KEEP["$LATEST_TAG"]=1
+
+i=0
+for t in "${TS_TAGS[@]:-}"; do
   [ -n "$t" ] || continue
-  # 只处理本前缀的「时间戳」tag：<PREFIX>-YYYYMMDD-HHMM[SS]
-  case "$t" in
-    "${PREFIX}"-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9]*) ;;
-    *) continue ;;   # latest / 非本前缀 / 其它 tag 一律不动
-  esac
-  stamp="${t#${PREFIX}-}"
-  d="${stamp%%-*}"
-  hhmm="${stamp#*-}"; hhmm="${hhmm:0:4}"
-  rel_epoch="$(date -d "${d:0:4}-${d:4:2}-${d:6:2} ${hhmm:0:2}:${hhmm:2:2}" +%s 2>/dev/null || echo "")"
-  [ -n "$rel_epoch" ] || continue
-  if [ "$rel_epoch" -lt "$cutoff_epoch" ]; then
-    log "删除过期 Release: $t"
-    gh release delete "$t" --repo "$REPO" --yes --cleanup-tag || true
+  [ "$i" -lt "$KEEP_RECENT" ] && KEEP["$t"]=1
+  i=$((i + 1))
+done
+
+# 每个月的最后一次编译（TS_TAGS 已按时间倒序，每个 YYYYMM 的首次出现即该月最后一次）
+declare -A MONTH_SEEN=()
+for t in "${TS_TAGS[@]:-}"; do
+  [ -n "$t" ] || continue
+  d="${t#${PREFIX}-}"; m="${d:0:6}"
+  if [ -z "${MONTH_SEEN[$m]:-}" ]; then
+    KEEP["$t"]=1
+    MONTH_SEEN[$m]=1
   fi
 done
 
-log "完成"
+for t in "${TS_TAGS[@]:-}"; do
+  [ -n "$t" ] || continue
+  d="${t#${PREFIX}-}"
+  case "$d" in "${TODAY}-"*) KEEP["$t"]=1 ;; esac
+done
+
+log "时间戳版本共 ${#TS_TAGS[@]} 个，月度归档 ${#MONTH_SEEN[@]} 个月，保留 ${#KEEP[@]} 个 Release"
+
+for t in "${TS_TAGS[@]:-}"; do
+  [ -n "$t" ] || continue
+  [ -n "${KEEP[$t]:-}" ] && continue
+  log "删除旧 Release: $t"
+  gh release delete "$t" --repo "$REPO" --yes --cleanup-tag || true
+done
+
+legacy="$(gh release list --repo "$REPO" --limit 500 --json tagName --jq '.[].tagName' \
+  | grep -E "^${PREFIX}(-|$)" | grep -vE "^${PREFIX}-[0-9]{8}-[0-9]{4}$" | grep -vx "$LATEST_TAG" || true)"
+if [ -n "$legacy" ]; then
+  log "以下非时间戳格式的旧 Release 已保留（如需删除请手动处理）：$(printf '%s' "$legacy" | tr '\n' ' ')"
+fi
+
+log "完成：本次时间戳 tag = ${TS_TAG}"

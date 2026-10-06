@@ -1,8 +1,8 @@
-# 机型白名单：只编译这里列出的机型（每行一个 DEVICE 名，来自 target/linux/<board>/image/<subtarget>.mk）
-# 留空（或全部注释掉）= 编译该 subtarget 的【全部机型】，并自动跟随上游新增机型。
-# 支持 # 注释。
-#
-# 例：只想编译以下机型时，取消注释即可
-# redmi_ax6-stock
-# xiaomi_ax3600-stock
-# qnap_301w
+# 只编译这里列出的机型（其余全部关闭，显著缩短编译时间）
+# 每行一个设备名，不带 CONFIG_ 前缀；# 开头为注释
+# CR6608 在 OpenWrt / ImmortalWrt 里的系统名（target/linux/ramips/image/mt7621.mk 中的 Device 名）：
+xiaomi_mi-router-cr6608
+
+# 同平台同硬件、想一起编译时可按需追加（CR6606 / CR6609 与 CR6608 共用 mt7621_xiaomi_mi-router-cr660x）
+# xiaomi_mi-router-cr6606
+# xiaomi_mi-router-cr6609

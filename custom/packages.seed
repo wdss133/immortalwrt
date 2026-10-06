@@ -1,40 +1,45 @@
 ### ============================================================
-###  IPQ807X 定制软件包清单
-###  以后想加包 / 删包，只改这个文件，不用动 configs/General.config 等文件。
-###  格式完全等同 OpenWrt .config：
-###      CONFIG_PACKAGE_包名=y            启用
-###      # CONFIG_PACKAGE_包名 is not set 关闭
-###  编译时由 scripts/custom/immortalwrt-customize.sh 读入并合并进最终 .config。
+###  小米 CR6608 定制软件包清单
+###  以后要加包 / 删包，只改这个文件，不用动 .config 或任何脚本。
+###  格式与 OpenWrt .config 完全一致：
+###     CONFIG_PACKAGE_包名=y               启用
+###     # CONFIG_PACKAGE_包名 is not set    关闭
+###  其余以 # 开头的都是注释，脚本会自动忽略。
+###  注意：24.10 里 fw4 / nftables / wget / tc / iptables / miniupnpd / v2ray-geodata
+###        都是 PROVIDES 虚拟名，写 CONFIG_PACKAGE_<它们>=y 会被 make defconfig 静默丢弃，
+###        请使用真实包名（fw4->firewall4，wget->wget-ssl，tc->tc-full，miniupnpd->miniupnpd-nftables）。
 ### ============================================================
 
-### ---- 默认主题：argon（同时移除 Aurora）----
+# ---- 主题：argon（同时确保 aurora 及其配置插件不存在）----
 CONFIG_PACKAGE_luci-theme-argon=y
 CONFIG_PACKAGE_luci-app-argon-config=y
 # CONFIG_PACKAGE_luci-theme-aurora is not set
 # CONFIG_PACKAGE_luci-app-aurora-config is not set
 
-### ---- 内核模块：ZeroTier / EasyTier 都依赖 TUN ----
+# ---- 内核模块：ZeroTier 与 EasyTier 都需要 TUN ----
 CONFIG_PACKAGE_kmod-tun=y
 
-### ---- EasyTier（默认 noweb 预编译版，编译快；要完整源码编译版把下面两行对调）----
+# ---- EasyTier（noweb = 官方预编译二进制，支持 mipsel，编译快）----
+# 要改成源码编译版：把下面两行的注释状态对调即可
 CONFIG_PACKAGE_easytier-noweb=y
 # CONFIG_PACKAGE_easytier is not set
 CONFIG_PACKAGE_luci-app-easytier=y
 
-### ---- ZeroTier（用 mwarning/zerotier-openwrt 上游新版替换 feeds 旧版）----
+# ---- ZeroTier（用 mwarning 维护的新版包替换 feeds 旧版，失败或被丢弃会自动回退 feeds 版）----
 CONFIG_PACKAGE_zerotier=y
 CONFIG_PACKAGE_luci-app-zerotier=y
 
-### ---- ddns-go ----
+# ---- ddns-go ----
 CONFIG_PACKAGE_ddns-go=y
 CONFIG_PACKAGE_luci-app-ddns-go=y
 
-### ---- iStore 软件商店 ----
+# ---- iStore 应用商店 ----
 CONFIG_PACKAGE_luci-app-store=y
 CONFIG_PACKAGE_luci-lib-taskd=y
 CONFIG_PACKAGE_luci-lib-xterm=y
 CONFIG_PACKAGE_taskd=y
 CONFIG_PACKAGE_luci-compat=y
+CONFIG_PACKAGE_luci-lua-runtime=y
 
-### ---- 消息推送（微信 / Telegram / 邮件 / 钉钉）----
+# ---- wechatpush（微信 / Telegram / 邮件 推送通知）----
 CONFIG_PACKAGE_luci-app-wechatpush=y
