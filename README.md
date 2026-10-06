@@ -1,93 +1,96 @@
-<img src="https://avatars.githubusercontent.com/u/53193414?s=200&v=4" alt="logo" width="200" height="200" align="right">
+# ImmortalWrt IPQ807X 定制固件 CI
 
-# Project ImmortalWrt
+> 本仓库是 [Heleguo/immortalwrt](https://github.com/Heleguo/immortalwrt)（分支 `openwrt-24.10`）的 **自动编译定制分支**：
+> 每日自动同步上游主线，按下面的定制编译 **qualcommax_ipq807x**（内核 6.6）固件并发布。
+> 全部定制均以 **新增文件 + 幂等脚本** 实现，不改动上游任何既有文件，上游同步不产生冲突，
+> 换上游分支 / 重新 fork 后按原要求照跑。
 
-ImmortalWrt is a fork of [OpenWrt](https://openwrt.org), with more packages ported, more devices supported, default optimized profiles and localization modifications for mainland China users.<br/>
-Compared to upstream, we allow to use (non-upstreamable) modifications/hacks to provide better feature/performance/support.
+## ✅ 本仓库相对上游的实际变更
 
-Default login address: http://192.168.1.1 or http://immortalwrt.lan, username: __root__, password: _none_.
+### 1) 编译目标与机型
+- 目标：**qualcommax_ipq807x**（`qualcommax / ipq807x`，内核 **6.6**，Qualcomm ath11k 无线）
+- 机型：
 
-## Download
-Built firmware images are available for many architectures and come with a package selection to be used as WiFi home router. To quickly find a factory image usable to migrate from a vendor stock firmware to ImmortalWrt, try the *Firmware Selector*.
+- **全部机型**（未设置白名单，按源码树该 subtarget 的全部机型编译）
 
-- [ImmortalWrt Firmware Selector](https://firmware-selector.immortalwrt.org/)
+### 2) 默认主题
+- 默认主题改为 **argon**，并在 `/etc/uci-defaults` 注入兜底脚本，保证首次开机即生效。
+- **移除 Aurora 主题及其配置插件**（`luci-theme-aurora` / `luci-app-aurora-config`），
+  存在则删除（源码树 + feeds + 软链 + 配置项全部清理），不存在时静默跳过。
 
-If your device is supported, please follow the **Info** link to see install instructions or consult the support resources listed below.
+### 3) 内核特性
+- 启用 **`kmod-tun`**，用于适配 ZeroTier / EasyTier。
 
-## Development
-To build your own firmware you need a GNU/Linux, BSD or macOS system (case sensitive filesystem required). Cygwin is unsupported because of the lack of a case sensitive file system.<br/>
+### 4) 新增内置插件
+（来源于 `custom/packages.seed`）
 
-  ### Requirements
-  To build with this project, Debian 11 is preferred. And you need use the CPU based on AMD64 architecture, with at least 4GB RAM and 25 GB available disk space. Make sure the __Internet__ is accessible.
+- luci-theme-argon
+- luci-app-argon-config
+- kmod-tun
+- easytier-noweb
+- luci-app-easytier
+- zerotier
+- luci-app-zerotier
+- ddns-go
+- luci-app-ddns-go
+- luci-app-store
+- luci-lib-taskd
+- luci-lib-xterm
+- taskd
+- luci-compat
+- luci-app-wechatpush
 
-  The following tools are needed to compile ImmortalWrt, the package names vary between distributions.
+其中第三方插件在编译时从各自上游仓库拉取**最新版**；分支名自动探测，
+上游把 `master` 改成 `main`、或改目录结构都不会打断流水线。
 
-  - Here is an example for Debian/Ubuntu users:<br/>
-    - Method 1:
-      <details>
-        <summary>Setup dependencies via APT</summary>
+### 5) 内置插件最新版本与上游更新日期
 
-        ```bash
-        sudo apt update -y
-        sudo apt full-upgrade -y
-        sudo apt install -y ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
-          bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
-          g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
-          libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev \
-          libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano \
-          ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
-          python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
-          upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
-        ```
-      </details>
-    - Method 2:
-      ```bash
-      sudo bash -c 'bash <(curl -s https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-      ```
+| 插件 | 版本 | 上游最近更新 | 仓库 |
+|---|---|---|---|
+| kmod-tun | 随内核 6.6 | — | openwrt base |
+| luci-theme-argon (默认主题) | 随 immortalwrt/luci feed | — | https://github.com/jerrykuku/luci-theme-argon |
+| EasyTier | 见 Release 说明 | — | https://github.com/EasyTier/luci-app-easytier |
+| ZeroTier | 见 Release 说明 | — | https://github.com/mwarning/zerotier-openwrt |
+| ddns-go | 见 Release 说明 | — | https://github.com/sirpdboy/luci-app-ddns-go |
+| iStore (luci-app-store) | 见 Release 说明 | — | https://github.com/linkease/istore |
+| wechatpush (luci-app-wechatpush) | 见 Release 说明 | — | https://github.com/tty228/luci-app-wechatpush |
 
-  Note:
-  - Do everything as an unprivileged user, not root, without sudo.
-  - Using CPUs based on other architectures should be fine to compile ImmortalWrt, but more hacks are needed - No warranty at all.
-  - You must __not__ have spaces or non-ascii characters in PATH or in the work folders on the drive.
-  - If you're using Windows Subsystem for Linux (or WSL), removing Windows folders from PATH is required, please see [Build system setup WSL](https://openwrt.org/docs/guide-developer/build-system/wsl) documentation.
-  - Using macOS as the host build OS is __not__ recommended. No warranty at all. You can get tips from [Build system setup macOS](https://openwrt.org/docs/guide-developer/build-system/buildroot.exigence.macosx) documentation.
-  - For more details, please see [Build system setup](https://openwrt.org/docs/guide-developer/build-system/install-buildsystem) documentation.
+> 上表来自最近一次编译的发布说明；完整版本号与上游更新日期见对应 Release。
 
-  ### Quickstart
-  1. Run `git clone -b <branch> --single-branch --filter=blob:none https://github.com/immortalwrt/immortalwrt` to clone the source code.
-  2. Run `cd immortalwrt` to enter source directory.
-  3. Run `./scripts/feeds update -a` to obtain all the latest package definitions defined in feeds.conf / feeds.conf.default
-  4. Run `./scripts/feeds install -a` to install symlinks for all obtained packages into package/feeds/
-  5. Run `make menuconfig` to select your preferred configuration for the toolchain, target system & firmware packages.
-  6. Run `make` to build your firmware. This will download all sources, build the cross-compile toolchain and then cross-compile the GNU/Linux kernel & all chosen applications for your target system.
+### 6) 发布策略（全自动）
+每次编译后：
+- 更新滚动 Release `IPQ807X-ImmortalWrt-latest` —— **下载链接固定**，永远指向最新固件；
+- **同时创建一个「时间戳 tag」的新 Release** `IPQ807X-ImmortalWrt-YYYYMMDD-HHMM`（北京时间），作为本次编译的快照；
+- 自动清理：仅保留 `latest` 与最近 **30** 天的时间戳 Release，避免无限增长。
 
-  ### Related Repositories
-  The main repository uses multiple sub-repositories to manage packages of different categories. All packages are installed via the OpenWrt package manager called opkg. If you're looking to develop the web interface or port packages to ImmortalWrt, please find the fitting repository below.
-  - [LuCI Web Interface](https://github.com/immortalwrt/luci): Modern and modular interface to control the device via a web browser.
-  - [ImmortalWrt Packages](https://github.com/immortalwrt/packages): Community repository of ported packages.
-  - [OpenWrt Routing](https://github.com/openwrt/routing): Packages specifically focused on (mesh) routing.
-  - [OpenWrt Video](https://github.com/openwrt/video): Packages specifically focused on display servers and clients (Xorg and Wayland).
+### 7) 自动化
+- **每日北京时间 21:00**（UTC 13:00）自动执行：同步上游 → 应用定制 → 编译 → 发布 → 重写本 README；
+- 也可在 Actions 页手动 `Run workflow`，可选是否先同步上游、EasyTier 变体、Release 保留天数。
 
-## Support Information
-For a list of supported devices see the [OpenWrt Hardware Database](https://openwrt.org/supported_devices)
-  ### Documentation
-  - [Quick Start Guide](https://openwrt.org/docs/guide-quick-start/start)
-  - [User Guide](https://openwrt.org/docs/guide-user/start)
-  - [Developer Documentation](https://openwrt.org/docs/guide-developer/start)
-  - [Technical Reference](https://openwrt.org/docs/techref/start)
+## 🚀 刷机
+从 `IPQ807X-ImmortalWrt-latest` 下载对应机型文件：
+- 已刷过 OpenWrt / ImmortalWrt：`sysupgrade -n <...sysupgrade.bin>`（或 LuCI「系统 → 备份/刷写固件」，首刷建议不保留配置）；
+- 原厂 / 未刷过：经 uboot / breed 或 initramfs 中转，再用对应 `factory` 镜像。
 
-  ### Support Community
-  - Support Chat: group [@ctcgfw_openwrt_discuss](https://t.me/ctcgfw_openwrt_discuss) on [Telegram](https://telegram.org/).
-  - Support Chat: group [#immortalwrt](https://matrix.to/#/#immortalwrt:matrix.org) on [Matrix](https://matrix.org/).
+> 具体默认 IP 与密码以该机型在 ImmortalWrt 上游的默认值为准。
 
-## License
-ImmortalWrt is licensed under [GPL-2.0-only](https://spdx.org/licenses/GPL-2.0-only.html).
+## 🔁 换分支 / 重新 fork 后继续使用
+定制全部收敛在 **自有文件** 中，迁移时带上这些文件即可按原要求运行：
 
-## Acknowledgements
-<table>
-  <tr>
-    <td><a href="https://dlercloud.com/"><img src="https://user-images.githubusercontent.com/22235437/111103249-f9ec6e00-8588-11eb-9bfc-67cc55574555.png" width="183" height="52" border="0" alt="Dler Cloud"></a></td>
-    <td><a href="https://www.jetbrains.com/"><img src="https://resources.jetbrains.com/storage/products/company/brand/logos/jb_square.png" width="120" height="120" border="0" alt="JetBrains Black Box Logo logo"></a></td>
-    <td><a href="https://sourceforge.net/"><img src="https://sourceforge.net/sflogo.php?type=17&group_id=3663829" alt="SourceForge" width=200></a></td>
-  </tr>
-</table>
+| 文件 | 作用 |
+|---|---|
+| `.github/workflows/ImmortalWrt-IPQ807X-Daily.yml` | 同步 + 编译 + 发布 + 文档 流水线 |
+| `scripts/custom/immortalwrt-customize.sh` | 应用全部定制（主题 / 机型 / 插件 / 插件版本表） |
+| `scripts/custom/release.sh` | 生成发布说明 + `latest`/时间戳 发布 + 清理旧 Release |
+| `scripts/custom/gen-readme.sh` | 生成本 README |
+| `custom/packages.seed` | 新增/启用插件清单（改包只改这里） |
+| `custom/General.config` | 通用配置（主题、中文、基础工具、插件开关） |
+| `custom/IPQ807X.config` | 目标 board/subtarget 配置 |
+| `custom/devices.include`、`devices.exclude` | 机型白名单 / 黑名单 |
+
+上游源码：https://github.com/wdss133/immortalwrt（分支 openwrt-24.10）。
+镜像 / 覆盖分支：`custom-ipq807x`（其 `custom/` 目录会被编译时优先采用）。
+
+---
+
+_本 README 由 `scripts/custom/gen-readme.sh` 自动生成；要改内容请改脚本或 `custom/` 配置，勿手工大改。_

@@ -1,0 +1,8 @@
+# 机型白名单：只编译这里列出的机型（每行一个 DEVICE 名，来自 target/linux/<board>/image/<subtarget>.mk）
+# 留空（或全部注释掉）= 编译该 subtarget 的【全部机型】，并自动跟随上游新增机型。
+# 支持 # 注释。
+#
+# 例：只想编译以下机型时，取消注释即可
+# redmi_ax6-stock
+# xiaomi_ax3600-stock
+# qnap_301w

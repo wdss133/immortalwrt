@@ -1,0 +1,40 @@
+### ============================================================
+###  IPQ807X 定制软件包清单
+###  以后想加包 / 删包，只改这个文件，不用动 configs/General.config 等文件。
+###  格式完全等同 OpenWrt .config：
+###      CONFIG_PACKAGE_包名=y            启用
+###      # CONFIG_PACKAGE_包名 is not set 关闭
+###  编译时由 scripts/custom/immortalwrt-customize.sh 读入并合并进最终 .config。
+### ============================================================
+
+### ---- 默认主题：argon（同时移除 Aurora）----
+CONFIG_PACKAGE_luci-theme-argon=y
+CONFIG_PACKAGE_luci-app-argon-config=y
+# CONFIG_PACKAGE_luci-theme-aurora is not set
+# CONFIG_PACKAGE_luci-app-aurora-config is not set
+
+### ---- 内核模块：ZeroTier / EasyTier 都依赖 TUN ----
+CONFIG_PACKAGE_kmod-tun=y
+
+### ---- EasyTier（默认 noweb 预编译版，编译快；要完整源码编译版把下面两行对调）----
+CONFIG_PACKAGE_easytier-noweb=y
+# CONFIG_PACKAGE_easytier is not set
+CONFIG_PACKAGE_luci-app-easytier=y
+
+### ---- ZeroTier（用 mwarning/zerotier-openwrt 上游新版替换 feeds 旧版）----
+CONFIG_PACKAGE_zerotier=y
+CONFIG_PACKAGE_luci-app-zerotier=y
+
+### ---- ddns-go ----
+CONFIG_PACKAGE_ddns-go=y
+CONFIG_PACKAGE_luci-app-ddns-go=y
+
+### ---- iStore 软件商店 ----
+CONFIG_PACKAGE_luci-app-store=y
+CONFIG_PACKAGE_luci-lib-taskd=y
+CONFIG_PACKAGE_luci-lib-xterm=y
+CONFIG_PACKAGE_taskd=y
+CONFIG_PACKAGE_luci-compat=y
+
+### ---- 消息推送（微信 / Telegram / 邮件 / 钉钉）----
+CONFIG_PACKAGE_luci-app-wechatpush=y
