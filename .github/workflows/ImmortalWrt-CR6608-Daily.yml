@@ -305,7 +305,23 @@ jobs:
         cd "$OPENWRT_PATH"
         # 源码树就是本仓库，仓库根的 .config 直接作为构建种子（customize.sh 已在原地改过它）
         [ -s .config ] || { echo "::error::未找到 .config 种子文件"; exit 1; }
+        cp -f .config /tmp/seed.config
         make defconfig
+
+        # ---- 诊断：哪些请求的包被 defconfig 静默丢弃（多为 PROVIDES 虚拟名或依赖不满足）----
+        grep -E '^CONFIG_PACKAGE_[^=]+=y$' /tmp/seed.config | sort > /tmp/requested.txt || true
+        grep -E '^CONFIG_PACKAGE_[^=]+=y$' .config | sort > /tmp/resolved.txt || true
+        comm -23 /tmp/requested.txt /tmp/resolved.txt > /tmp/dropped.txt || true
+        if [ -s /tmp/dropped.txt ]; then
+          echo "::warning::以下包在 make defconfig 后被丢弃（虚拟名/依赖不满足/上游改名）："
+          sed 's/^/    dropped: /' /tmp/dropped.txt
+          for p in $(sed -E 's/^CONFIG_PACKAGE_//; s/=y$//' /tmp/dropped.txt); do
+            echo "    --- ${p} 的 Kconfig 依赖 ---"
+            awk -v sym="config PACKAGE_${p}" '$0==sym{f=1} f{print "      "$0} f&&/^\t\thelp/{f=0}' tmp/.config-package.in 2>/dev/null | head -14 || true
+          done
+        else
+          echo "请求的包全部保留"
+        fi
 
         # ---- MTK 闭源无线落位校验；未进入配置则自动回退开源 mt76/wpad ----
         MTK_STATE="off"
@@ -325,15 +341,29 @@ jobs:
         [ "$cnt" -eq 1 ] || { echo "::error::libustream-ssl 变体数量必须为 1（当前 $cnt）"; exit 1; }
 
         echo "---- 关键项自检 ----"
+        # 机型符号有两种合法写法：
+        #   A) CONFIG_TARGET_<board>_<subtarget>_DEVICE_<name>          （单选 choice，由 TARGET_PROFILE 推导）
+        #   B) CONFIG_TARGET_DEVICE_<board>_<subtarget>_DEVICE_<name>   （仅当 CONFIG_TARGET_MULTI_PROFILE=y 时存在）
+        # 本仓库 .config 用的是 A，这里两种都认。
+        DEV_A="CONFIG_TARGET_${TARGET_ID}_DEVICE_${DEVICE}"
+        DEV_B="CONFIG_TARGET_DEVICE_${TARGET_ID}_DEVICE_${DEVICE}"
+        echo "  TARGET_PROFILE = $(grep -m1 '^CONFIG_TARGET_PROFILE=' .config || echo '(未设置)')"
+        echo "  已选机型（$DEV_A / $DEV_B）："
+        grep -E '^CONFIG_TARGET_[A-Za-z0-9_]*DEVICE_[^=]*=y' .config | sed 's/^/    /' || true
+
         fail=0
-        for sym in CONFIG_PACKAGE_kmod-tun CONFIG_PACKAGE_luci-theme-argon CONFIG_TARGET_ramips_mt7621 \
-                   CONFIG_TARGET_DEVICE_ramips_mt7621_DEVICE_${DEVICE}; do
+        for sym in CONFIG_PACKAGE_kmod-tun CONFIG_PACKAGE_luci-theme-argon CONFIG_TARGET_ramips_mt7621; do
           if grep -q "^${sym}=y" .config; then
             echo "OK   ${sym}"
           else
             echo "::error::关键项未选中: ${sym}"; fail=1
           fi
         done
+        if grep -qE "^(${DEV_A}|${DEV_B})=y" .config; then
+          echo "OK   目标机型 ${DEVICE}"
+        else
+          echo "::error::目标机型 ${DEVICE} 未选中（既非 $DEV_A 也非 $DEV_B）"; fail=1
+        fi
         for sym in CONFIG_PACKAGE_zerotier CONFIG_PACKAGE_luci-app-zerotier \
                    CONFIG_PACKAGE_easytier-noweb CONFIG_PACKAGE_luci-app-easytier \
                    CONFIG_PACKAGE_ddns-go CONFIG_PACKAGE_luci-app-ddns-go \

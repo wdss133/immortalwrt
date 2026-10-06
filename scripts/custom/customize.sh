@@ -333,7 +333,9 @@ if [ "$MTK_ENABLE" -eq 1 ]; then
              kmod-mt7615-firmware kmod-mt7603 wifi-scripts; do
     config_set "$MAIN_CONFIG" "CONFIG_PACKAGE_$sym" n
   done
-  safe_rm package/network/config/wifi-scripts
+  # 注意：这里只做「配置层关闭」，不删除 package/network/config/wifi-scripts 目录。
+  # 删目录会让 package/kernel/mac80211 的依赖解析报 "dependency on 'wifi-scripts' which does not exist"，
+  # 只要该包未被选中，它的 /sbin/wifi 就不会安装，不会与 wifi-profile 撞文件。
 
   # 目标 DEFAULT_PACKAGES 里通常强制包含 wpad / kmod-mac80211 / wifi-scripts，
   # 只写 "is not set" 会被 make defconfig 重新拉回 =y，所以直接把它们从
