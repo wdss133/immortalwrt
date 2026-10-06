@@ -354,6 +354,33 @@ else
   log "使用开源 mt76/wpad 无线栈（MTK_WIFI=$MTK_WIFI）"
 fi
 
+############################ 4.5 WOL / UPNP 依赖自愈 ############################
+# 现象：luci-app-wol / luci-app-upnp / etherwake / miniupnpd-nftables 在 make defconfig
+#       之后被静默丢弃。
+# 原因 1：openwrt-24.10 的 luci-app-upnp Makefile 里写了 LUCI_DEPENDS:=+luci-base +miniupnpd +rpcd-mod-ucode，
+#         但**本分支没有 rpcd-mod-ucode 这个包**（luci/modules、packages feed 均无）→ 依赖不可满足 → 整包被丢。
+#         处理：确认确实不存在时，把该依赖从源码树的 Makefile 里移除（幂等，只改源码树）。
+# 原因 2：etherwake 与 etherwake-nfqueue 互相 PROVIDES/CONFLICTS，需要在配置里显式选定。
+
+if [ -d feeds/luci/applications/luci-app-upnp ]; then
+  if find package feeds -maxdepth 4 -type d -name 'rpcd-mod-ucode' -print -quit 2>/dev/null | grep -q .; then
+    log "  发现 rpcd-mod-ucode，保留 luci-app-upnp 的原始依赖"
+  else
+    upnp_mk="feeds/luci/applications/luci-app-upnp/Makefile"
+    if [ -f "$upnp_mk" ] && grep -q 'rpcd-mod-ucode' "$upnp_mk"; then
+      sed -i -E 's/[[:space:]]*\+rpcd-mod-ucode//g; s/[[:space:]]*rpcd-mod-ucode//g' "$upnp_mk"
+      log "  luci-app-upnp：已移除本分支不存在的依赖 +rpcd-mod-ucode"
+    fi
+  fi
+fi
+
+for sym in miniupnpd-nftables etherwake luci-app-wol luci-app-upnp; do
+  config_set "$MAIN_CONFIG" "CONFIG_PACKAGE_$sym" y
+done
+config_set "$MAIN_CONFIG" CONFIG_PACKAGE_etherwake-nfqueue n
+config_set "$MAIN_CONFIG" CONFIG_PACKAGE_miniupnpd-iptables n
+log "  WOL / UPNP 依赖已整理（etherwake + luci-app-wol + luci-app-upnp + miniupnpd-nftables）"
+
 ############################ 5. 拉取第三方软件包 ############################
 
 log "拉取第三方软件包（架构: ${ARCH_NAME}）"
@@ -431,12 +458,19 @@ remote_go_requirement() {
   for n in 1 2 3; do
     raw="$(curl -fsSL --retry 2 --max-time 20 "https://raw.githubusercontent.com/${repo}/${tag}/go.mod" 2>/dev/null || true)"
     if [ -n "$raw" ]; then
-      printf '%s' "$raw" | awk '/^go[[:space:]]/{gsub(/[^0-9.]/,"",$2); n=split($2,p,"."); print p[1]"."p[2]; exit}'
+      printf '%s' "$raw" | awk '/^go[[:space:]]/{gsub(/[^0-9.]/,"",$2); n=split($2,p,"."); print p[1]"."p[2]; exit}' || true
       return 0
     fi
     sleep 1
   done
   return 1
+}
+
+# 取某个上游 tag 的 go 版本要求；网络失败返回空（绝不中止脚本）
+safe_remote_go_requirement() {
+  local v
+  v="$(remote_go_requirement "$1" "$2" 2>/dev/null || true)"
+  printf '%s\n' "$v"
 }
 
 available_go() {
@@ -456,7 +490,7 @@ go_compatible_version() {
   while IFS= read -r tag; do
     [ -n "$tag" ] || continue
     n=$((n + 1)); [ "$n" -gt 80 ] && break
-    need="$(remote_go_requirement "$repo" "$tag" || true)"
+    need="$(safe_remote_go_requirement "$repo" "$tag")"
     [ -n "$need" ] || continue
     if ! ver_gt "$need" "$avail"; then
       printf '%s\n' "$tag"
@@ -471,9 +505,14 @@ go_compatible_version() {
 pin_pkg_version() {
   local mk="$1" repo="$2" ver="$3" hash
   [ -f "$mk" ] || return 1
-  hash="$(curl -fsSL --max-time 120 "https://codeload.github.com/${repo}/tar.gz/v${ver}" 2>/dev/null \
-          | sha256sum | awk '{print $1}')"
-  [ -n "$hash" ] || { warn "无法计算 ${repo} v${ver} 的 sha256，放弃钉版本"; return 1; }
+  # 注意：这里必须让网络失败「不致命」——set -e + pipefail 下，
+  # curl 一失败整条流水线就返回非 0，会把整个脚本中止掉。
+  hash="$( { curl -fsSL --retry 3 --max-time 120 "https://codeload.github.com/${repo}/tar.gz/v${ver}" 2>/dev/null || true; } \
+           | sha256sum | awk '{print $1}' || true)"
+  case "$hash" in
+    [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) : ;;
+    *) warn "无法计算 ${repo} v${ver} 的 sha256（网络异常？），放弃钉版本"; return 1 ;;
+  esac
   sed -i -E "s|^PKG_VERSION:=.*|PKG_VERSION:=${ver}|" "$mk"
   if grep -qE '^PKG_HASH:=' "$mk"; then
     sed -i -E "s|^PKG_HASH:=.*|PKG_HASH:=${hash}|" "$mk"
@@ -499,8 +538,7 @@ if fetch_repo https://github.com/sirpdboy/luci-app-ddns-go.git "$ddns_dir" main 
     avail_go="$(available_go)"
     log "  本分支可用 Go 版本: ${avail_go:-未知}"
     cur_ver="$(grep -m1 -E '^PKG_VERSION:?=' package/ddns-go/Makefile 2>/dev/null | sed -E 's/^[^=]*=//; s/[[:space:]]//g' || true)"
-    need_go="$(curl -fsSL --max-time 20 "https://raw.githubusercontent.com/jeessy2/ddns-go/v${cur_ver}/go.mod" 2>/dev/null \
-               | awk '/^go[[:space:]]/{print $2; exit}')"
+    need_go="$(safe_remote_go_requirement jeessy2/ddns-go "v${cur_ver}")"
     if [ -n "$avail_go" ] && [ -n "$need_go" ] && ver_gt "$need_go" "$avail_go"; then
       warn "ddns-go v${cur_ver} 需要 go >= ${need_go}，而本分支只有 ${avail_go}，自动降级到兼容版本"
       if new_tag="$(go_compatible_version jeessy2/ddns-go "$avail_go")"; then

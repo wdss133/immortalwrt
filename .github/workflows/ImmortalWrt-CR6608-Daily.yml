@@ -309,16 +309,22 @@ jobs:
         make defconfig
 
         # ---- 诊断：哪些请求的包被 defconfig 静默丢弃（多为 PROVIDES 虚拟名或依赖不满足）----
-        grep -E '^CONFIG_PACKAGE_[^=]+=y$' /tmp/seed.config | sort > /tmp/requested.txt || true
-        grep -E '^CONFIG_PACKAGE_[^=]+=y$' .config | sort > /tmp/resolved.txt || true
-        comm -23 /tmp/requested.txt /tmp/resolved.txt > /tmp/dropped.txt || true
-        if [ -s /tmp/dropped.txt ]; then
+        # 用逐项校验而不是 comm 比较：comm 对排序/语言环境敏感，曾出现「实际丢了却报全部保留」的误报。
+        dropped=""
+        while IFS= read -r sym; do
+          [ -n "$sym" ] || continue
+          grep -qE "^${sym}=[ym]$" .config || dropped="${dropped}${sym} "
+        done < <(grep -oE '^CONFIG_PACKAGE_[^=]+(?==y$)' /tmp/seed.config | sort -u || true)
+
+        if [ -n "$dropped" ]; then
           echo "::warning::以下包在 make defconfig 后被丢弃（虚拟名/依赖不满足/上游改名）："
-          sed 's/^/    dropped: /' /tmp/dropped.txt
-          for p in $(sed -E 's/^CONFIG_PACKAGE_//; s/=y$//' /tmp/dropped.txt); do
+          for s in $dropped; do
+            echo "    dropped: $s"
+            p="${s#CONFIG_PACKAGE_}"
             echo "    --- ${p} 的 Kconfig 依赖 ---"
-            awk -v sym="config PACKAGE_${p}" '$0==sym{f=1} f{print "      "$0} f&&/^\t\thelp/{f=0}' tmp/.config-package.in 2>/dev/null | head -14 || true
+            awk -v pat="config PACKAGE_${p}$" 'index($0,pat)==1{f=1} f{print "      "$0} f&&/^\t\thelp/{f=0}' tmp/.config-package.in 2>/dev/null | head -16 || true
           done
+          printf '%s\n' "$dropped" > "$OPENWRT_PATH/.ci-dropped.txt"
         else
           echo "请求的包全部保留"
         fi
@@ -423,11 +429,20 @@ jobs:
         run_make() {
           local rc=0
           make -j"$(nproc)" 2>&1 | tee "$LOG" || rc=${PIPESTATUS[0]}
-          if [ "$rc" -ne 0 ]; then
-            echo "::warning::并行编译失败，改用单线程 V=s 复现以定位错误"
-            make -j1 V=s 2>&1 | tee -a "$LOG" || rc=${PIPESTATUS[0]}
-          fi
           return "$rc"
+        }
+
+        # 单线程 V=s 很慢，只在「并行日志里定位不到失败包」时才跑，避免每次失败都白等一次全量串行编译
+        run_make_verbose() {
+          local rc=0
+          echo "::warning::并行日志未能定位失败包，改用单线程 V=s 复现以获取详细错误"
+          make -j1 V=s 2>&1 | tee -a "$LOG" || rc=${PIPESTATUS[0]}
+          return "$rc"
+        }
+
+        find_failed_pkgs() {
+          grep -hoE 'ERROR: package/[^ ]+ failed to build' "$LOG" 2>/dev/null \
+            | sed -E 's#^ERROR: package/##; s# failed to build$##' | sort -u || true
         }
 
         ok=0
@@ -444,11 +459,13 @@ jobs:
             continue
           fi
 
-          # 通用自愈：从日志里找出「ERROR: package/xxx failed to build」的包，剔除后重试
-          mapfile -t fail_pkgs < <(grep -hoE 'ERROR: package/[^ ]+ failed to build' "$LOG" 2>/dev/null \
-            | sed -E 's#^ERROR: package/##; s# failed to build$##' | sort -u || true)
+          mapfile -t fail_pkgs < <(find_failed_pkgs)
           if [ "${#fail_pkgs[@]}" -eq 0 ]; then
-            echo "::error::编译失败，且日志中未出现可定位的单包失败，以下为日志尾部："
+            run_make_verbose || true
+            mapfile -t fail_pkgs < <(find_failed_pkgs)
+          fi
+          if [ "${#fail_pkgs[@]}" -eq 0 ]; then
+            echo "::error::编译失败，且无法从日志定位失败的包，以下为日志尾部："
             tail -n 80 "$LOG" || true
             exit 1
           fi
