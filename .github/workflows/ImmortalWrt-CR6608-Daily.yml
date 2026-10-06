@@ -415,23 +415,67 @@ jobs:
         set -Eeuo pipefail
         cd "$OPENWRT_PATH"
         echo -e "$(nproc) thread compile"
+        LOG=/tmp/make.log
+        NOT_BUILT="$OPENWRT_PATH/${ARTIFACT_PREFIX}.not-built.txt"
+        : > "$NOT_BUILT"
         final_state="$MTK_STATE"
-        if make -j"$(nproc)" || make -j1 V=s; then
-          echo "编译成功（无线方案状态: $final_state）"
-        else
-          if [ "$MTK_STATE" = "on" ]; then
-            # MTK 闭源驱动首次在 CI 里编译，失败概率不低。为了不让整轮空手而归，
-            # 自动回退到开源 mt76/wpad 再编一次（工具链/ccache 已在，重编多为增量）。
-            echo "::warning::启用 MTK 闭源无线时编译失败，自动回退开源 mt76/wpad 后重编"
-            ./scripts/custom/fallback-openwrt-wifi.sh
-            make -j"$(nproc)" || make -j1 V=s
-            final_state="fallback"
-            echo "回退后编译成功（无线方案状态: $final_state）"
-          else
-            echo "::error::编译失败"; exit 1
+
+        run_make() {
+          local rc=0
+          make -j"$(nproc)" 2>&1 | tee "$LOG" || rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "::warning::并行编译失败，改用单线程 V=s 复现以定位错误"
+            make -j1 V=s 2>&1 | tee -a "$LOG" || rc=${PIPESTATUS[0]}
           fi
+          return "$rc"
+        }
+
+        ok=0
+        # 最多 4 轮：先把无线栈回退处理好，再对「单包编译失败」（如 Go 版本过新、依赖缺失）自愈
+        for round in 1 2 3 4; do
+          echo "=============== 编译第 $round 轮 ==============="
+          if run_make; then ok=1; break; fi
+
+          if [ "$round" -eq 1 ] && [ "$final_state" = "on" ]; then
+            echo "::warning::启用 MTK 闭源无线时编译失败，自动回退开源 mt76/wpad 后重编"
+            tail -n 40 "$LOG" || true
+            ./scripts/custom/fallback-openwrt-wifi.sh
+            final_state="fallback"
+            continue
+          fi
+
+          # 通用自愈：从日志里找出「ERROR: package/xxx failed to build」的包，剔除后重试
+          mapfile -t fail_pkgs < <(grep -hoE 'ERROR: package/[^ ]+ failed to build' "$LOG" 2>/dev/null \
+            | sed -E 's#^ERROR: package/##; s# failed to build$##' | sort -u || true)
+          if [ "${#fail_pkgs[@]}" -eq 0 ]; then
+            echo "::error::编译失败，且日志中未出现可定位的单包失败，以下为日志尾部："
+            tail -n 80 "$LOG" || true
+            exit 1
+          fi
+          echo "::warning::以下包编译失败，自动剔除后重试：${fail_pkgs[*]}"
+          for p in "${fail_pkgs[@]}"; do
+            printf '%s\n' "$p" >> "$NOT_BUILT"
+            base="${p##*/}"
+            rm -rf "$OPENWRT_PATH/package/$p"
+            rm -rf "$OPENWRT_PATH/package/feeds"/*/"$base" 2>/dev/null || true
+            rm -rf "$OPENWRT_PATH/feeds"/*/"$base" "$OPENWRT_PATH/feeds"/*/*/"$base" 2>/dev/null || true
+            rm -rf "$OPENWRT_PATH/build_dir"/target-*/"$base"-* 2>/dev/null || true
+          done
+          rm -rf tmp/.packageinfo tmp/.packageauxvars
+          make defconfig >/dev/null 2>&1 || true
+        done
+
+        if [ "$ok" -ne 1 ]; then
+          echo "::error::编译最终失败（已尝试自动剔除失败包仍不通过），日志尾部："
+          tail -n 100 "$LOG" || true
+          exit 1
         fi
         echo "mtk_state=$final_state" >> "$GITHUB_OUTPUT"
+        if [ -s "$NOT_BUILT" ]; then
+          echo "::warning::本次为产出固件剔除了以下无法编译的包（详见发布说明）：$(tr '\n' ' ' < "$NOT_BUILT")"
+        else
+          echo "全部包编译通过，无剔除"
+        fi
 
     - name: Check Space Usage(检查空间使用情况)
       if: ${{ !cancelled() }}
@@ -454,6 +498,9 @@ jobs:
         cp -f config.buildinfo                "$F/" 2>/dev/null || true
         cp -f "$OPENWRT_PATH"/${ARTIFACT_PREFIX}.plugins.md "$F/" 2>/dev/null || true
         cp -f "$OPENWRT_PATH"/third-party-sources.txt "$F/" 2>/dev/null || true
+        if [ -s "$OPENWRT_PATH/${ARTIFACT_PREFIX}.not-built.txt" ]; then
+          cp -f "$OPENWRT_PATH/${ARTIFACT_PREFIX}.not-built.txt" "$F/"
+        fi
         printf '%s\n' "$(git rev-parse HEAD)" > "$F/source-commit.txt"
 
         if [ ! -s "$F/${ARTIFACT_PREFIX}-${DEVICE}-squashfs-sysupgrade.bin" ]; then

@@ -104,6 +104,18 @@ BODY="$WORK/body.md"
     echo "（无第三方源记录）"
   fi
   echo ""
+  NOT_BUILT="$(ls "$ART_DIR"/*.not-built.txt 2>/dev/null | head -n1 || true)"
+  if [ -n "$NOT_BUILT" ]; then
+    echo "### ⚠️ 本次未编入的包"
+    echo ""
+    echo "以下包因上游变更（如要求的 Go 版本高于本分支自带版本、依赖缺失）无法编译，"
+    echo "已自动剔除以保证固件可产出；其余功能不受影响。"
+    echo ""
+    echo '```'
+    sort -u "$NOT_BUILT"
+    echo '```'
+    echo ""
+  fi
   echo "### 🗂 Release 保留策略"
   echo "- 每次编译生成一个时间戳 tag：\`${PREFIX}-YYYYMMDD-HHMM\`（北京时间）"
   echo "- 同时更新滚动 \`${LATEST_TAG}\`"

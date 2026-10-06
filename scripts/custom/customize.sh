@@ -412,19 +412,130 @@ config_set "$MAIN_CONFIG" CONFIG_PACKAGE_zerotier y
 config_set "$MAIN_CONFIG" CONFIG_PACKAGE_luci-app-zerotier y
 
 # --- ddns-go ---
-ddns_dir="$SOURCE_TMP/ddns-go"
-if fetch_repo https://github.com/sirpdboy/luci-app-ddns-go.git "$ddns_dir" main master; then
-  safe_rm feeds/packages/net/ddns-go package/feeds/packages/ddns-go package/ddns-go
-  safe_rm feeds/luci/applications/luci-app-ddns-go package/feeds/luci/luci-app-ddns-go package/luci-app-ddns-go
-  added=0
-  [ -d "$ddns_dir/ddns-go" ] && { mv "$ddns_dir/ddns-go" package/ddns-go; added=1; }
-  [ -d "$ddns_dir/luci-app-ddns-go" ] && { mv "$ddns_dir/luci-app-ddns-go" package/luci-app-ddns-go; added=1; }
-  if [ "$added" -eq 1 ]; then
-    config_set "$MAIN_CONFIG" CONFIG_PACKAGE_ddns-go y
-    config_set "$MAIN_CONFIG" CONFIG_PACKAGE_luci-app-ddns-go y
-    log "  已加入 ddns-go"
+# 坑：sirpdboy 仓库跟的是上游 jeessy2/ddns-go 最新版（如 6.17.1 要求 go >= 1.25），
+# 而 openwrt-24.10 自带的 Go 只有 1.23.x，直接编必然报
+#   go: ../../go.mod requires go >= 1.25.0 (running go 1.23.12; GOTOOLCHAIN=local)
+# 处理：自动探测「本分支可用的 Go 版本」，把 ddns-go 钉到**最新的、Go 够用的上游版本**，
+#      并同步改掉 PKG_HASH。上游以后又发新版也不需要人工干预。
+# 只按 major.minor 比较：go.mod 里可能写 1.23.0，而本分支给的是 1.23，直接比会误判
+ver_gt() {
+  local a b
+  a="$(printf '%s' "$1" | awk -F. '{print $1"."$2}')"
+  b="$(printf '%s' "$2" | awk -F. '{print $1"."$2}')"
+  [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n1)" = "$a" ]
+}
+
+# 取某个 tag 的 go.mod 里声明的 go 版本（带重试，返回 major.minor）
+remote_go_requirement() {
+  local repo="$1" tag="$2" raw n
+  for n in 1 2 3; do
+    raw="$(curl -fsSL --retry 2 --max-time 20 "https://raw.githubusercontent.com/${repo}/${tag}/go.mod" 2>/dev/null || true)"
+    if [ -n "$raw" ]; then
+      printf '%s' "$raw" | awk '/^go[[:space:]]/{gsub(/[^0-9.]/,"",$2); n=split($2,p,"."); print p[1]"."p[2]; exit}'
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+available_go() {
+  local f v
+  for f in feeds/packages/lang/golang/golang/Makefile feeds/packages/lang/golang/golang1.*/Makefile; do
+    [ -f "$f" ] || continue
+    v="$(grep -m1 -E '^GO_VERSION_MAJOR_MINOR:?=' "$f" | sed -E 's/^[^=]*=//; s/[[:space:]]//g')"
+    [ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+  done
+  printf '%s\n' ""
+}
+
+# go_compatible_version <upstream_owner/repo> <可用Go(major.minor)>  → 打印最新的兼容 tag
+go_compatible_version() {
+  local repo="$1" avail="$2" tag need n=0
+  [ -n "$avail" ] || return 1
+  while IFS= read -r tag; do
+    [ -n "$tag" ] || continue
+    n=$((n + 1)); [ "$n" -gt 80 ] && break
+    need="$(remote_go_requirement "$repo" "$tag" || true)"
+    [ -n "$need" ] || continue
+    if ! ver_gt "$need" "$avail"; then
+      printf '%s\n' "$tag"
+      return 0
+    fi
+  done < <(git ls-remote --tags --refs "https://github.com/${repo}.git" 'v*' 2>/dev/null \
+           | awk -F'refs/tags/' '{print $2}' | sort -Vr)
+  return 1
+}
+
+# 把某个包目录的 Makefile 钉到指定版本，并重新计算 PKG_HASH
+pin_pkg_version() {
+  local mk="$1" repo="$2" ver="$3" hash
+  [ -f "$mk" ] || return 1
+  hash="$(curl -fsSL --max-time 120 "https://codeload.github.com/${repo}/tar.gz/v${ver}" 2>/dev/null \
+          | sha256sum | awk '{print $1}')"
+  [ -n "$hash" ] || { warn "无法计算 ${repo} v${ver} 的 sha256，放弃钉版本"; return 1; }
+  sed -i -E "s|^PKG_VERSION:=.*|PKG_VERSION:=${ver}|" "$mk"
+  if grep -qE '^PKG_HASH:=' "$mk"; then
+    sed -i -E "s|^PKG_HASH:=.*|PKG_HASH:=${hash}|" "$mk"
   else
-    warn "ddns-go 仓库结构变化，未找到子目录，本次跳过"
+    printf 'PKG_HASH:=%s\n' "$hash" >> "$mk"
+  fi
+  log "  已将 $(basename "$(dirname "$mk")") 钉到 v${ver}（PKG_HASH=${hash:0:12}…）"
+}
+
+ddns_dir="$SOURCE_TMP/ddns-go"
+ddns_ok=0
+if fetch_repo https://github.com/sirpdboy/luci-app-ddns-go.git "$ddns_dir" main master; then
+  # 只使用 sirpdboy 的 LuCI 界面；本体包沿用同一份 Makefile，但会按 Go 版本自动钉版本
+  safe_rm package/luci-app-ddns-go
+  [ -d "$ddns_dir/luci-app-ddns-go" ] && cp -a "$ddns_dir/luci-app-ddns-go" package/luci-app-ddns-go
+
+  if [ -d "$ddns_dir/ddns-go" ]; then
+    safe_rm package/ddns-go
+    cp -a "$ddns_dir/ddns-go" package/ddns-go
+    # 避免与 feeds 同名包冲突
+    safe_rm package/feeds/packages/ddns-go package/feeds/luci/luci-app-ddns-go
+
+    avail_go="$(available_go)"
+    log "  本分支可用 Go 版本: ${avail_go:-未知}"
+    cur_ver="$(grep -m1 -E '^PKG_VERSION:?=' package/ddns-go/Makefile 2>/dev/null | sed -E 's/^[^=]*=//; s/[[:space:]]//g' || true)"
+    need_go="$(curl -fsSL --max-time 20 "https://raw.githubusercontent.com/jeessy2/ddns-go/v${cur_ver}/go.mod" 2>/dev/null \
+               | awk '/^go[[:space:]]/{print $2; exit}')"
+    if [ -n "$avail_go" ] && [ -n "$need_go" ] && ver_gt "$need_go" "$avail_go"; then
+      warn "ddns-go v${cur_ver} 需要 go >= ${need_go}，而本分支只有 ${avail_go}，自动降级到兼容版本"
+      if new_tag="$(go_compatible_version jeessy2/ddns-go "$avail_go")"; then
+        new_ver="${new_tag#v}"
+        if pin_pkg_version "package/ddns-go/Makefile" "jeessy2/ddns-go" "$new_ver"; then
+          ddns_ok=1
+        fi
+      else
+        warn "找不到兼容 ${avail_go} 的 ddns-go 版本"
+      fi
+    else
+      ddns_ok=1
+    fi
+  fi
+
+  # 本体不可用时，回退到 feeds 自带（feed 版本按本分支维护，天然兼容）
+  if [ "$ddns_ok" -ne 1 ]; then
+    if [ -f feeds/packages/net/ddns-go/Makefile ]; then
+      warn "回退到 feeds 自带的 ddns-go（$(grep -m1 -E '^PKG_VERSION:?=' feeds/packages/net/ddns-go/Makefile | sed -E 's/^[^=]*=//')）"
+      safe_rm package/ddns-go package/feeds/packages/ddns-go
+      ddns_ok=2
+    else
+      warn "feeds 中也没有 ddns-go，本次编译将不含该插件"
+    fi
+  fi
+
+  if [ "$ddns_ok" -ne 0 ]; then
+    config_set "$MAIN_CONFIG" CONFIG_PACKAGE_ddns-go y
+    if [ -d package/luci-app-ddns-go ]; then
+      config_set "$MAIN_CONFIG" CONFIG_PACKAGE_luci-app-ddns-go y
+      config_set "$MAIN_CONFIG" CONFIG_PACKAGE_luci-lua-runtime y
+      log "  已加入 ddns-go + luci-app-ddns-go"
+    else
+      log "  已加入 ddns-go（luci-app-ddns-go 仓库结构变化，未找到界面目录）"
+    fi
   fi
 else
   warn "ddns-go 获取失败，本次编译将不含 ddns-go"
@@ -520,7 +631,7 @@ plugin_row "ZeroTier" \
   "$(pkg_ver "package/zerotier/Makefile" "feeds/packages/net/zerotier/Makefile")" \
   "$(git_date "$zt_dir")" "https://github.com/mwarning/zerotier-openwrt"
 plugin_row "ddns-go" \
-  "$(pkg_ver "package/ddns-go/Makefile")" \
+  "$(pkg_ver "package/ddns-go/Makefile" "feeds/packages/net/ddns-go/Makefile")" \
   "$(git_date "$ddns_dir")" "https://github.com/sirpdboy/luci-app-ddns-go"
 plugin_row "iStore (luci-app-store)" \
   "$(pkg_ver "package/luci-app-store/Makefile")" \
