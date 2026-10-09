@@ -68,7 +68,7 @@
 | ZeroTier | 1.16.0 | 2025-09-12 | https://github.com/mwarning/zerotier-openwrt |
 | ddns-go | 6.12.5 | 2026-06-23 | https://github.com/sirpdboy/luci-app-ddns-go |
 | iStore (luci-app-store) | 0.2.1-r1 | 2026-09-25 | https://github.com/linkease/istore |
-| wechatpush (luci-app-wechatpush) | 3.6.12 | 2026-09-09 | https://github.com/tty228/luci-app-wechatpush |
+| wechatpush (luci-app-wechatpush) | 3.6.13 | 2026-10-10 | https://github.com/tty228/luci-app-wechatpush |
 | Argon 主题（默认） | 2.4.3 | 2026-09-03 | https://github.com/jerrykuku/luci-theme-argon |
 | MTK 闭源无线（mt_wifi / luci-app-mtk） | 20230628-7a2544-TEST | (随本仓库) | MTK SDK（仓库内 package/mtk） |
 
