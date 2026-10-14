@@ -64,7 +64,7 @@
 | 插件 | 版本 | 上游最近更新 | 仓库 |
 |---|---|---|---|
 | kmod-tun | (见固件清单) | 随内核 6.6 | openwrt base |
-| EasyTier (luci-app-easytier) | 2.6.4 | 2026-09-25 | https://github.com/EasyTier/luci-app-easytier |
+| EasyTier (luci-app-easytier) | 2.7.0 | 2026-10-14 | https://github.com/EasyTier/luci-app-easytier |
 | ZeroTier | 1.16.0 | 2025-09-12 | https://github.com/mwarning/zerotier-openwrt |
 | ddns-go | 6.12.5 | 2026-06-23 | https://github.com/sirpdboy/luci-app-ddns-go |
 | iStore (luci-app-store) | 0.2.1-r1 | 2026-09-25 | https://github.com/linkease/istore |
